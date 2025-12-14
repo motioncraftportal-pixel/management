@@ -450,8 +450,9 @@
         }
 
         .login-input:focus {
-            animation: glow 2s ease-in-out infinite;
-        }
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+    outline: none;
+}
 
         .floating-shapes {
             position: absolute;
@@ -2886,7 +2887,7 @@
                             </div>
                             
                             {/* Login Card */}
-                            <div className="bg-white/10 backdrop-blur-xl rounded-3xl shadow-2xl p-6 md:p-8 border border-white/20">
+                            <div className="bg-slate-800 rounded-3xl shadow-2xl p-6 md:p-8 border border-slate-700">
                                 {!showForgotPassword ? (
                                     // Login Form
                                     <form onSubmit={handleLogin} className="space-y-5">
