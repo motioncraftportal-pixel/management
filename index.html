@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -982,7 +983,13 @@
         // =============================================
 
         const MobileOrderCard = ({ order, team, onEdit, onPayment, onDelete, onStatusChange, onWhatsApp, onEditBudget }) => {
-            const teamMember = getTeamMemberById(order.assignedEditor, team);
+    const assignedMembers = order.assignedMembers || [];
+    const totalTeamBudget = assignedMembers.reduce((sum, m) => sum + (m.budget || 0), 0);
+    
+    // Backward compatibility
+    const legacyEditor = order.assignedEditor && !assignedMembers.length 
+        ? getTeamMemberById(order.assignedEditor, team) 
+        : null;
             
             const lastPayment = order.paymentHistory && order.paymentHistory.length > 0 
                 ? order.paymentHistory[order.paymentHistory.length - 1] 
@@ -1034,19 +1041,50 @@
                             </div>
                         </div>
                         <div className="col-span-2 pt-2 border-t border-gray-100 mt-1">
-                            <div className="flex justify-between items-center">
-                                <div>
-                                    <span className="text-gray-500 text-xs">Editor: </span>
-                                    <span className="text-sm font-medium text-gray-900">
-                                        {order.assignedEditor ? teamMember.name : 'Unassigned'}
-                                    </span>
-                                </div>
-                                <div className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded flex items-center">
-                                    Team Budget: {formatCurrency(order.teamBudget || 0, order.currency)}
-                                    <button onClick={() => onEditBudget(order)} className="ml-2 text-blue-800"><i className="fas fa-edit"></i></button>
-                                </div>
-                            </div>
+    <div className="flex justify-between items-center mb-2">
+        <span className="text-gray-500 text-xs font-medium">Assigned Team:</span>
+        <div className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded flex items-center">
+            Total Budget: {formatCurrency(totalTeamBudget, order.currency)}
+            <button onClick={() => onEditBudget(order)} className="ml-2 text-blue-800"><i className="fas fa-edit"></i></button>
+        </div>
+    </div>
+    
+    {/* Show Assigned Members */}
+    {assignedMembers.length > 0 ? (
+        <div className="space-y-1">
+            {assignedMembers.map(member => {
+                const teamMember = team.find(t => t.id === member.memberId);
+                return (
+                    <div key={member.memberId} className="flex justify-between items-center text-xs bg-gray-50 px-2 py-1 rounded">
+                        <span className="font-medium text-gray-700">
+                            <i className="fas fa-user-circle mr-1 text-blue-500"></i>
+                            {teamMember?.name || member.memberName}
+                        </span>
+                        <div className="flex items-center gap-2">
+                            <span className="text-blue-600 font-medium">
+                                {formatCurrency(member.budget || 0, order.currency)}
+                            </span>
+                            <span className={`px-1.5 py-0.5 rounded-full text-xs font-medium ${
+                                member.paymentStatus === 'Paid' ? 'bg-green-100 text-green-700' :
+                                member.paymentStatus === 'Partial' ? 'bg-yellow-100 text-yellow-700' :
+                                'bg-red-100 text-red-700'
+                            }`}>
+                                {member.paymentStatus}
+                            </span>
                         </div>
+                    </div>
+                );
+            })}
+        </div>
+    ) : legacyEditor ? (
+        <div className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded">
+            <i className="fas fa-user-circle mr-1 text-blue-500"></i>
+            {legacyEditor.name} (Legacy)
+        </div>
+    ) : (
+        <div className="text-xs text-gray-400 italic">No team members assigned</div>
+    )}
+</div>
                     </div>
 
                     <div className="bg-gray-50 rounded-lg p-2 mb-3">
@@ -1580,44 +1618,85 @@
 
             // Calculate team workload
             const teamWorkload = React.useMemo(() => {
-                return team.map(member => {
-                    const memberOrders = orders.filter(order => 
-                        order.assignedEditor === member.id && 
-                        order.status !== 'Completed'
-                    );
-                    
-                    const completedThisMonth = orders.filter(order => 
-                        order.assignedEditor === member.id && 
-                        order.status === 'Completed' &&
-                        order.createdAt && order.createdAt.startsWith(selectedMonth)
-                    ).length;
-
-                    const monthlyOrders = orders.filter(order => 
-                        order.assignedEditor === member.id &&
-                        order.createdAt && order.createdAt.startsWith(selectedMonth)
-                    );
-                    
-                    const budgetUsed = monthlyOrders.reduce((sum, order) => {
-                        let budgetAmount = order.teamBudget || 0;
-                        if (order.currency !== member.currency) {
-                            if (order.currency === "USD" && member.currency === "BDT") {
-                                budgetAmount = budgetAmount * CONFIG.EXCHANGE_RATE_BDT_PER_USD;
-                            } else if (order.currency === "BDT" && member.currency === "USD") {
-                                budgetAmount = budgetAmount / CONFIG.EXCHANGE_RATE_BDT_PER_USD;
-                            }
-                        }
-                        return sum + budgetAmount;
-                    }, 0);
-                    
-                    return {
-                        ...member,
-                        activeProjects: memberOrders.length,
-                        completedThisMonth,
-                        budgetUsed,
-                        budgetPercentage: member.monthlyBudget ? (budgetUsed / member.monthlyBudget) * 100 : 0
-                    };
-                });
-            }, [team, orders, selectedMonth]);
+    return team.map(member => {
+        // Count active projects (legacy + new)
+        const legacyActiveOrders = orders.filter(order => 
+            order.assignedEditor === member.id && 
+            order.status !== 'Completed'
+        ).length;
+        
+        const newActiveOrders = orders.filter(order => 
+            (order.assignedMembers || []).some(m => m.memberId === member.id) &&
+            order.status !== 'Completed'
+        ).length;
+        
+        const activeProjects = legacyActiveOrders + newActiveOrders;
+        
+        // Count completed this month
+        const legacyCompleted = orders.filter(order => 
+            order.assignedEditor === member.id && 
+            order.status === 'Completed' &&
+            order.createdAt && order.createdAt.startsWith(selectedMonth)
+        ).length;
+        
+        const newCompleted = orders.filter(order => 
+            (order.assignedMembers || []).some(m => m.memberId === member.id) &&
+            order.status === 'Completed' &&
+            order.createdAt && order.createdAt.startsWith(selectedMonth)
+        ).length;
+        
+        const completedThisMonth = legacyCompleted + newCompleted;
+        
+        // Calculate budget used
+        let budgetUsed = 0;
+        
+        // Legacy orders
+        const legacyMonthlyOrders = orders.filter(order => 
+            order.assignedEditor === member.id &&
+            order.createdAt && order.createdAt.startsWith(selectedMonth)
+        );
+        
+        budgetUsed += legacyMonthlyOrders.reduce((sum, order) => {
+            let budgetAmount = order.teamBudget || 0;
+            if (order.currency !== member.currency) {
+                if (order.currency === "USD" && member.currency === "BDT") {
+                    budgetAmount = budgetAmount * CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                } else if (order.currency === "BDT" && member.currency === "USD") {
+                    budgetAmount = budgetAmount / CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                }
+            }
+            return sum + budgetAmount;
+        }, 0);
+        
+        // New orders with multiple members
+        const newMonthlyOrders = orders.filter(order => 
+            order.createdAt && order.createdAt.startsWith(selectedMonth)
+        );
+        
+        newMonthlyOrders.forEach(order => {
+            const memberAssignment = (order.assignedMembers || []).find(m => m.memberId === member.id);
+            if (memberAssignment) {
+                let budgetAmount = memberAssignment.budget || 0;
+                if (order.currency !== member.currency) {
+                    if (order.currency === "USD" && member.currency === "BDT") {
+                        budgetAmount = budgetAmount * CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                    } else if (order.currency === "BDT" && member.currency === "USD") {
+                        budgetAmount = budgetAmount / CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                    }
+                }
+                budgetUsed += budgetAmount;
+            }
+        });
+        
+        return {
+            ...member,
+            activeProjects,
+            completedThisMonth,
+            budgetUsed,
+            budgetPercentage: member.monthlyBudget ? (budgetUsed / member.monthlyBudget) * 100 : 0
+        };
+    });
+}, [team, orders, selectedMonth]);
 
             // Notification count
             React.useEffect(() => {
@@ -1933,55 +2012,117 @@
             };
 
                         const assignEditor = async (orderId, editorId) => {
-                if (isSaving) return;
-                
-                setIsSaving(true);
-                try {
-                    const orderToUpdate = orders.find(o => o.id === orderId);
-                    if (orderToUpdate) {
-                        const oldEditor = orderToUpdate.assignedEditor;
-                        const oldEditorName = oldEditor ? getTeamMemberById(oldEditor, team).name : 'Unassigned';
-                        const newEditorName = editorId ? getTeamMemberById(editorId, team).name : 'Unassigned';
-                        
-                        const updatedOrder = { ...orderToUpdate, assignedEditor: editorId };
-                        await FirebaseService.saveOrder(updatedOrder);
-                        
-                        // Detailed Log
-                        await logActivity('EDITOR_ASSIGNED', 
-                            `Changed editor for order ${orderId} (${orderToUpdate.clientName}): "${oldEditorName}" → "${newEditorName}"`,
-                            { orderId, clientName: orderToUpdate.clientName, oldEditor: oldEditorName, newEditor: newEditorName }
-                        );
-                        
-                        showToast('Editor assigned', 'success');
-                    }
-                } catch (error) {
-                    console.error("Error assigning editor:", error);
-                    showToast('Error assigning editor', 'error');
-                } finally {
-                    setIsSaving(false);
-                }
-            };
+    if (isSaving) return;
+    
+    setIsSaving(true);
+    try {
+        const orderToUpdate = orders.find(o => o.id === orderId);
+        if (orderToUpdate) {
+            const oldEditor = orderToUpdate.assignedEditor;
+            const oldEditorName = oldEditor ? getTeamMemberById(oldEditor, team).name : 'Unassigned';
+            const newEditorName = editorId ? getTeamMemberById(editorId, team).name : 'Unassigned';
+            
+            const updatedOrder = { ...orderToUpdate, assignedEditor: editorId };
+            await FirebaseService.saveOrder(updatedOrder);
+            
+            // Detailed Log
+            await logActivity('EDITOR_ASSIGNED', 
+                `Changed editor for order ${orderId} (${orderToUpdate.clientName}): "${oldEditorName}" → "${newEditorName}"`,
+                { orderId, clientName: orderToUpdate.clientName, oldEditor: oldEditorName, newEditor: newEditorName }
+            );
+            
+            showToast('Editor assigned', 'success');
+        }
+    } catch (error) {
+        console.error("Error assigning editor:", error);
+        showToast('Error assigning editor', 'error');
+    } finally {
+        setIsSaving(false);
+    }
+};
+
+// ==================== New section ====================
+
+// Add Team Member to Order
+const addTeamMemberToOrder = (order, memberId) => {
+    const member = team.find(m => m.id === memberId);
+    if (!member) return order;
+    
+    const assignedMembers = order.assignedMembers || [];
+    
+    // Check if already added
+    if (assignedMembers.some(m => m.memberId === memberId)) {
+        showToast('This member is already assigned', 'error');
+        return order;
+    }
+    
+    const newMember = {
+        memberId: member.id,
+        memberName: member.name,
+        budget: 0,
+        paidAmount: 0,
+        paymentStatus: 'Pending'
+    };
+    
+    return {
+        ...order,
+        assignedMembers: [...assignedMembers, newMember]
+    };
+};
+
+// Remove Team Member from Order
+const removeTeamMemberFromOrder = (order, memberId) => {
+    const assignedMembers = order.assignedMembers || [];
+    return {
+        ...order,
+        assignedMembers: assignedMembers.filter(m => m.memberId !== memberId)
+    };
+};
+
+// Update Team Member Budget
+const updateTeamMemberBudget = (order, memberId, budget) => {
+    const assignedMembers = order.assignedMembers || [];
+    return {
+        ...order,
+        assignedMembers: assignedMembers.map(m => 
+            m.memberId === memberId ? {...m, budget: parseFloat(budget) || 0} : m
+        )
+    };
+};
+
+// Calculate Total Team Budget
+const calculateTotalTeamBudget = (order) => {
+    const assignedMembers = order.assignedMembers || [];
+    return assignedMembers.reduce((sum, m) => sum + (m.budget || 0), 0);
+};
+
+// Get Team Member Assignment Info
+const getTeamMemberAssignment = (order, memberId) => {
+    const assignedMembers = order.assignedMembers || [];
+    return assignedMembers.find(m => m.memberId === memberId);
+};
 
             const handleCreateOrder = () => {
-                setCurrentOrder({
-                    id: generateOrderId(orders),
-                    clientName: '',
-                    clientPhone: '',
-                    serviceType: 'Corporate Video',
-                    price: 0,
-                    currency: CONFIG.DEFAULT_DISPLAY_CURRENCY,
-                    dueDate: new Date().toISOString().slice(0, 10),
-                    assignedEditor: '',
-                    status: 'Fresh',
-                    notes: '',
-                    paymentStatus: 'Pending',
-                    paidAmount: 0,
-                    teamBudget: 0,
-                    paymentHistory: [],
-                    createdAt: new Date().toISOString().slice(0, 10)
-                });
-                setShowOrderModal(true);
-            };
+    setCurrentOrder({
+        id: generateOrderId(orders),
+        clientName: '',
+        clientPhone: '',
+        serviceType: 'Corporate Video',
+        price: 0,
+        currency: CONFIG.DEFAULT_DISPLAY_CURRENCY,
+        dueDate: new Date().toISOString().slice(0, 10),
+        assignedEditor: '', // Backward compatibility
+        assignedMembers: [], // NEW: [{memberId, memberName, budget, paidAmount, paymentStatus}]
+        status: 'Fresh',
+        notes: '',
+        paymentStatus: 'Pending',
+        paidAmount: 0,
+        teamBudget: 0, // Backward compatibility
+        paymentHistory: [],
+        createdAt: new Date().toISOString().slice(0, 10)
+    });
+    setShowOrderModal(true);
+};
 
             const handleEditOrder = (order) => {
                 setCurrentOrder({...order});
@@ -2368,60 +2509,83 @@
             };
 
                         const handleSaveTeamPayment = async (amount, isFull = false) => {
-                if (isSaving) return;
-                setIsSaving(true);
-                try {
-                    const oldPaidAmount = currentOrder.teamPaidAmount || 0;
-                    const oldStatus = currentOrder.teamPaymentStatus || 'Pending';
-                    
-                    let newPaidAmount = parseFloat(amount) || 0;
-                    let newStatus = 'Pending';
-                    const budget = currentOrder.teamBudget || 0;
+    if (isSaving) return;
+    setIsSaving(true);
+    try {
+        const memberId = currentOrder.selectedMemberId;
+        if (!memberId) {
+            showToast('No member selected', 'error');
+            setIsSaving(false);
+            return;
+        }
+        
+        const assignedMembers = currentOrder.assignedMembers || [];
+        const memberIndex = assignedMembers.findIndex(m => m.memberId === memberId);
+        
+        if (memberIndex === -1) {
+            showToast('Member not found', 'error');
+            setIsSaving(false);
+            return;
+        }
+        
+        const member = assignedMembers[memberIndex];
+        const oldPaidAmount = member.paidAmount || 0;
+        const oldStatus = member.paymentStatus || 'Pending';
+        const budget = member.budget || 0;
+        
+        let newPaidAmount = parseFloat(amount) || 0;
+        let newStatus = 'Pending';
 
-                    if (isFull || newPaidAmount >= budget) {
-                        newPaidAmount = budget;
-                        newStatus = 'Paid';
-                    } else if (newPaidAmount > 0) {
-                        newStatus = 'Partial';
-                    }
+        if (isFull || newPaidAmount >= budget) {
+            newPaidAmount = budget;
+            newStatus = 'Paid';
+        } else if (newPaidAmount > 0) {
+            newStatus = 'Partial';
+        }
+        
+        // Update member payment
+        const updatedMembers = [...assignedMembers];
+        updatedMembers[memberIndex] = {
+            ...member,
+            paidAmount: newPaidAmount,
+            paymentStatus: newStatus
+        };
+        
+        const updatedOrder = {
+            ...currentOrder,
+            assignedMembers: updatedMembers
+        };
+        
+        const teamMember = getTeamMemberById(memberId, team);
 
-                    const updatedOrder = { 
-                        ...currentOrder, 
-                        teamPaidAmount: newPaidAmount,
-                        teamPaymentStatus: newStatus
-                    };
-
-                    const editorName = currentOrder.assignedEditor 
-                        ? getTeamMemberById(currentOrder.assignedEditor, team).name 
-                        : 'Unassigned';
-
-                    await FirebaseService.saveOrder(updatedOrder);
-                    
-                    // Detailed Log
-                    await logActivity('TEAM_PAYMENT_UPDATED', 
-                        `Updated team payment for order ${currentOrder.id} (Editor: ${editorName}): ${oldPaidAmount} → ${newPaidAmount} ${currentOrder.currency} (Status: ${oldStatus} → ${newStatus})`,
-                        { 
-                            orderId: currentOrder.id, 
-                            editor: editorName,
-                            oldPaidAmount, 
-                            newPaidAmount, 
-                            oldStatus, 
-                            newStatus,
-                            budget,
-                            currency: currentOrder.currency
-                        }
-                    );
-                    
-                    setShowTeamPaymentModal(false);
-                    setCurrentOrder(null);
-                    showToast('Team payment updated', 'success');
-                } catch (error) {
-                    console.error("Error saving team payment:", error);
-                    showToast('Error updating team payment', 'error');
-                } finally {
-                    setIsSaving(false);
-                }
-            };
+        await FirebaseService.saveOrder(updatedOrder);
+        
+        // Detailed Log
+        await logActivity('TEAM_PAYMENT_UPDATED', 
+            `Updated team payment for order ${currentOrder.id} (Member: ${teamMember.name}): ${oldPaidAmount} → ${newPaidAmount} ${currentOrder.currency} (Status: ${oldStatus} → ${newStatus})`,
+            { 
+                orderId: currentOrder.id, 
+                memberId,
+                memberName: teamMember.name,
+                oldPaidAmount, 
+                newPaidAmount, 
+                oldStatus, 
+                newStatus,
+                budget,
+                currency: currentOrder.currency
+            }
+        );
+        
+        setShowTeamPaymentModal(false);
+        setCurrentOrder(null);
+        showToast('Team payment updated', 'success');
+    } catch (error) {
+        console.error("Error saving team payment:", error);
+        showToast('Error updating team payment', 'error');
+    } finally {
+        setIsSaving(false);
+    }
+};
 
                                     // =============================================
             // ADMIN MANAGEMENT HANDLERS (WITH ACTIVITY LOG)
@@ -3486,17 +3650,38 @@
                                                                 </td>
                                                                 <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">{order.serviceType}</td>
                                                                 <td className="px-4 py-4 whitespace-nowrap">
-                                                                    <div className="text-sm font-bold text-gray-900">{formatCurrency(order.price, order.currency)}</div>
-                                                                    <div className="text-xs text-blue-600 cursor-pointer" onClick={() => handleEditTeamBudget(order)}>
-                                                                        Team: {formatCurrency(order.teamBudget || 0, order.currency)} <i className="fas fa-edit"></i>
-                                                                    </div>
-                                                                </td>
+    <div className="text-sm font-bold text-gray-900">{formatCurrency(order.price, order.currency)}</div>
+    <div className="text-xs text-blue-600 cursor-pointer" onClick={() => handleEditTeamBudget(order)}>
+        Team Total: {formatCurrency(calculateTotalTeamBudget(order), order.currency)} <i className="fas fa-edit"></i>
+    </div>
+</td>
                                                                 <td className="px-4 py-4 whitespace-nowrap">
-                                                                    <select value={order.assignedEditor || ''} onChange={(e) => assignEditor(order.id, e.target.value)} className="text-xs border rounded px-2 py-1 bg-gray-50">
-                                                                        <option value="">Unassigned</option>
-                                                                        {team.filter(m => m.active).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                                                                    </select>
-                                                                </td>
+    <div className="space-y-1">
+        {(order.assignedMembers || []).length > 0 ? (
+            (order.assignedMembers || []).map(member => {
+                const teamMember = team.find(t => t.id === member.memberId);
+                return (
+                    <div key={member.memberId} className="flex items-center justify-between text-xs bg-blue-50 px-2 py-1 rounded">
+                        <span className="font-medium text-gray-700">{teamMember?.name || member.memberName}</span>
+                        <span className="text-blue-600 font-bold">{formatCurrency(member.budget || 0, order.currency)}</span>
+                    </div>
+                );
+            })
+        ) : order.assignedEditor ? (
+            <div className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded">
+                {getTeamMemberById(order.assignedEditor, team).name} (Legacy)
+            </div>
+        ) : (
+            <div className="text-xs text-gray-400 italic">Not assigned</div>
+        )}
+        <button 
+            onClick={() => handleEditOrder(order)} 
+            className="text-xs text-blue-600 hover:text-blue-800 font-medium mt-1"
+        >
+            <i className="fas fa-plus-circle mr-1"></i>Manage Team
+        </button>
+    </div>
+</td>
                                                                 <td className="px-4 py-4 whitespace-nowrap">
                                                                     <select value={order.status} onChange={(e) => updateOrderStatus(order.id, e.target.value)} className={`text-xs rounded-full px-2 py-1 font-medium ${getStatusClass(order.status)} border-0`}>
                                                                         <option value="Fresh">Fresh</option>
@@ -3587,57 +3772,121 @@
                                                 </tr>
                                             </thead>
                                             <tbody className="bg-white divide-y divide-gray-200">
-                                                {orders.filter(o => o.assignedEditor && o.status !== 'Completed').length === 0 ? (
-                                                    <tr><td colSpan="5" className="px-6 py-8 text-center text-gray-500">No active assigned projects.</td></tr>
-                                                ) : (
-                                                    orders.filter(o => o.assignedEditor && o.status !== 'Completed').map(order => {
-                                                        const member = getTeamMemberById(order.assignedEditor, team);
-                                                        const teamPaid = order.teamPaidAmount || 0;
-                                                        const teamStatus = order.teamPaymentStatus || 'Pending';
-                                                        const budget = order.teamBudget || 0;
-                                                        
-                                                        return (
-                                                            <tr key={order.id} className="hover:bg-gray-50">
-                                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                                    <div className="font-bold text-gray-900">{order.id}</div>
-                                                                    <div className="text-xs text-gray-500">{order.clientName}</div>
-                                                                </td>
-                                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                                    <div className="flex items-center">
-                                                                        <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 text-xs font-bold mr-2">
-                                                                            {getInitials(member.name)}
-                                                                        </div>
-                                                                        <span className="text-sm font-medium">{member.name}</span>
-                                                                    </div>
-                                                                </td>
-                                                                <td className="px-6 py-4 whitespace-nowrap text-blue-600 font-bold">
-                                                                    {formatCurrency(budget, order.currency)}
-                                                                </td>
-                                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                                    <span className={`px-2 py-1 text-xs rounded-full font-bold ${
-                                                                        teamStatus === 'Paid' ? 'bg-green-100 text-green-800' :
-                                                                        teamStatus === 'Partial' ? 'bg-yellow-100 text-yellow-800' :
-                                                                        'bg-red-100 text-red-800'
-                                                                    }`}>
-                                                                        {teamStatus}
-                                                                    </span>
-                                                                    <div className="text-xs text-gray-500 mt-1 font-medium">
-                                                                        Paid: {formatCurrency(teamPaid, order.currency)}
-                                                                    </div>
-                                                                </td>
-                                                                <td className="px-6 py-4 whitespace-nowrap text-right">
-                                                                    <button 
-                                                                        onClick={() => handleOpenTeamPayment(order)}
-                                                                        className="inline-flex items-center px-4 py-2 border border-transparent text-xs font-bold rounded-lg text-white bg-blue-600 hover:bg-blue-700 shadow-sm transition-all"
-                                                                    >
-                                                                        <i className="fas fa-hand-holding-usd mr-2"></i> Pay
-                                                                    </button>
-                                                                </td>
-                                                            </tr>
-                                                        );
-                                                    })
-                                                )}
-                                            </tbody>
+    {(() => {
+        // সব active assignments collect করি
+        const activeAssignments = [];
+        
+        orders.filter(o => o.status !== 'Completed').forEach(order => {
+            const members = order.assignedMembers || [];
+            
+            // নতুন format - multiple members
+            if (members.length > 0) {
+                members.forEach(member => {
+                    activeAssignments.push({ order, member });
+                });
+            } 
+            // Legacy format - single assignedEditor
+            else if (order.assignedEditor) {
+                activeAssignments.push({ 
+                    order, 
+                    member: { 
+                        memberId: order.assignedEditor, 
+                        memberName: getTeamMemberById(order.assignedEditor, team).name,
+                        budget: order.teamBudget || 0,
+                        paidAmount: order.teamPaidAmount || 0,
+                        paymentStatus: order.teamPaymentStatus || 'Pending'
+                    }
+                });
+            }
+        });
+        
+        // যদি কোনো assignment না থাকে
+        if (activeAssignments.length === 0) {
+            return (
+                <tr>
+                    <td colSpan="5" className="px-6 py-8 text-center text-gray-500">
+                        <i className="fas fa-clipboard-list text-3xl text-gray-300 mb-3 block"></i>
+                        No active assigned projects.
+                    </td>
+                </tr>
+            );
+        }
+        
+        // প্রতিটা assignment এর জন্য row render করি
+        return activeAssignments.map(({ order, member }, index) => {
+            const teamMember = getTeamMemberById(member.memberId, team);
+            const teamPaid = member.paidAmount || 0;
+            const teamStatus = member.paymentStatus || 'Pending';
+            const budget = member.budget || 0;
+            
+            return (
+                <tr key={`${order.id}-${member.memberId}-${index}`} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="font-bold text-gray-900">{order.id}</div>
+                        <div className="text-xs text-gray-500">{order.clientName}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold mr-2">
+                                {getInitials(teamMember.name)}
+                            </div>
+                            <div>
+                                <span className="text-sm font-medium text-gray-900">{teamMember.name}</span>
+                                <p className="text-xs text-gray-500">{teamMember.role || 'Team Member'}</p>
+                            </div>
+                        </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                        <span className="text-blue-600 font-bold text-lg">
+                            {formatCurrency(budget, order.currency)}
+                        </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`px-2 py-1 text-xs rounded-full font-bold ${
+                            teamStatus === 'Paid' ? 'bg-green-100 text-green-800' :
+                            teamStatus === 'Partial' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                        }`}>
+                            {teamStatus}
+                        </span>
+                        <div className="text-xs text-gray-500 mt-1 font-medium">
+                            Paid: {formatCurrency(teamPaid, order.currency)}
+                        </div>
+                        {/* Progress Bar */}
+                        {budget > 0 && (
+                            <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                                <div 
+                                    className={`h-1.5 rounded-full ${
+                                        teamStatus === 'Paid' ? 'bg-green-500' : 
+                                        teamStatus === 'Partial' ? 'bg-yellow-500' : 
+                                        'bg-gray-300'
+                                    }`}
+                                    style={{ width: `${Math.min((teamPaid / budget) * 100, 100)}%` }}
+                                ></div>
+                            </div>
+                        )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right">
+                        <button 
+                            onClick={() => {
+                                setCurrentOrder({
+                                    ...order,
+                                    selectedMemberId: member.memberId,
+                                    teamPaidAmount: teamPaid,
+                                    teamPaymentStatus: teamStatus
+                                });
+                                setShowTeamPaymentModal(true);
+                            }}
+                            className="inline-flex items-center px-4 py-2 border border-transparent text-xs font-bold rounded-lg text-white bg-blue-600 hover:bg-blue-700 shadow-sm transition-all"
+                        >
+                            <i className="fas fa-hand-holding-usd mr-2"></i> Pay
+                        </button>
+                    </td>
+                </tr>
+            );
+        });
+    })()}
+</tbody>
                                         </table>
                                     </div>
                                 </div>
@@ -4269,110 +4518,226 @@
                         </div>
                     </nav>
 
-                    {/* ==================== ORDER MODAL ==================== */}
-                    {showOrderModal && currentOrder && (
-                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 md:p-4 z-50">
-                            <div className="bg-white rounded-xl shadow-card w-full max-w-2xl modal-content">
-                                <div className="p-4 md:p-6 border-b border-gray-200">
-                                    <div className="flex justify-between items-center">
-                                        <h3 className="text-lg font-semibold text-gray-900">
-                                            {orders.find(o => o.id === currentOrder.id) ? 'Edit Order' : 'Create New Order'}
-                                        </h3>
-                                        <button onClick={() => setShowOrderModal(false)} className="text-gray-400 hover:text-gray-600">
-                                            <i className="fas fa-times text-xl"></i>
-                                        </button>
+                    {/* ==================== ORDER MODAL (WITH MULTIPLE TEAM MEMBERS) ==================== */}
+{showOrderModal && currentOrder && (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 md:p-4 z-50 overflow-y-auto">
+        <div className="bg-white rounded-xl shadow-card w-full max-w-4xl modal-content my-8">
+            {/* Header */}
+            <div className="p-4 md:p-6 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-purple-50">
+                <div className="flex justify-between items-center">
+                    <div>
+                        <h3 className="text-lg font-semibold text-gray-900">
+                            {orders.find(o => o.id === currentOrder.id) ? 'Edit Order' : 'Create New Order'}
+                        </h3>
+                        <p className="text-sm text-gray-600 mt-1">Manage order details and assign team members with budgets</p>
+                    </div>
+                    <button onClick={() => setShowOrderModal(false)} className="text-gray-400 hover:text-gray-600">
+                        <i className="fas fa-times text-xl"></i>
+                    </button>
+                </div>
+            </div>
+            
+            {/* Body */}
+            <div className="p-4 md:p-6 max-h-[70vh] overflow-y-auto">
+                {/* ========== SECTION 1: Basic Information ========== */}
+                <div className="mb-6">
+                    <h4 className="text-md font-bold text-gray-900 mb-3 flex items-center">
+                        <i className="fas fa-info-circle mr-2 text-blue-600"></i>
+                        Basic Information
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Order ID</label>
+                            <input type="text" value={currentOrder.id} disabled className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-100" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Client Name *</label>
+                            <input type="text" value={currentOrder.clientName} onChange={(e) => setCurrentOrder({...currentOrder, clientName: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="Enter client name" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Client Phone *</label>
+                            <input type="text" value={currentOrder.clientPhone} onChange={(e) => setCurrentOrder({...currentOrder, clientPhone: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="+880..." />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Service Type</label>
+                            <select value={currentOrder.serviceType} onChange={(e) => setCurrentOrder({...currentOrder, serviceType: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                                <option value="Corporate Video">Corporate Video</option>
+                                <option value="Product Promo">Product Promo</option>
+                                <option value="Social Media Ads">Social Media Ads</option>
+                                <option value="Training Videos">Training Videos</option>
+                                <option value="Property Showcase">Property Showcase</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Price</label>
+                            <input type="number" value={currentOrder.price} onChange={(e) => setCurrentOrder({...currentOrder, price: parseFloat(e.target.value) || 0})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Currency</label>
+                            <select value={currentOrder.currency} onChange={(e) => setCurrentOrder({...currentOrder, currency: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                                <option value="BDT">BDT</option>
+                                <option value="USD">USD</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Due Date</label>
+                            <input type="date" value={currentOrder.dueDate} onChange={(e) => setCurrentOrder({...currentOrder, dueDate: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                            <select value={currentOrder.status} onChange={(e) => setCurrentOrder({...currentOrder, status: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                                <option value="Fresh">Fresh</option>
+                                <option value="Scripting">Scripting</option>
+                                <option value="Editing">Editing</option>
+                                <option value="Correction">Correction</option>
+                                <option value="Final Delivery">Final Delivery</option>
+                                <option value="Completed">Completed</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Payment Status</label>
+                            <select value={currentOrder.paymentStatus} onChange={(e) => setCurrentOrder({...currentOrder, paymentStatus: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                                <option value="Pending">Pending</option>
+                                <option value="Partial">Partial</option>
+                                <option value="Paid">Paid</option>
+                            </select>
+                        </div>
+                        <div className="md:col-span-2">
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+                            <textarea value={currentOrder.notes || ''} onChange={(e) => setCurrentOrder({...currentOrder, notes: e.target.value})} rows="2" className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="Additional notes..."></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                {/* ========== SECTION 2: Team Assignment (নতুন অংশ) ========== */}
+                <div className="border-t pt-6">
+                    <h4 className="text-md font-bold text-gray-900 mb-3 flex items-center justify-between">
+                        <span>
+                            <i className="fas fa-users mr-2 text-purple-600"></i>
+                            Team Assignment & Budgets
+                        </span>
+                        <span className="text-sm font-normal text-blue-600">
+                            Total: {formatCurrency(calculateTotalTeamBudget(currentOrder), currentOrder.currency)}
+                        </span>
+                    </h4>
+                    
+                    {/* Add Team Member Dropdown */}
+                    <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Add Team Member</label>
+                        <div className="flex gap-2">
+                            <select 
+                                id="teamMemberSelect"
+                                className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                defaultValue=""
+                            >
+                                <option value="">Select a team member...</option>
+                                {team.filter(m => m.active).map(member => (
+                                    <option key={member.id} value={member.id}>{member.name}</option>
+                                ))}
+                            </select>
+                            <button 
+                                type="button"
+                                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+                                onClick={() => {
+                                    const select = document.getElementById('teamMemberSelect');
+                                    if (select.value) {
+                                        setCurrentOrder(addTeamMemberToOrder(currentOrder, select.value));
+                                        select.value = '';
+                                    } else {
+                                        showToast('Please select a team member', 'error');
+                                    }
+                                }}
+                            >
+                                <i className="fas fa-plus mr-1"></i>Add
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Assigned Members List */}
+                    {(currentOrder.assignedMembers || []).length > 0 ? (
+                        <div className="space-y-3">
+                            {(currentOrder.assignedMembers || []).map((member, index) => {
+                                const teamMember = team.find(t => t.id === member.memberId);
+                                return (
+                                    <div key={member.memberId} className="p-4 bg-white border-2 border-blue-100 rounded-lg hover:border-blue-300 transition-all">
+                                        <div className="flex items-start justify-between mb-3">
+                                            <div className="flex items-center">
+                                                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold mr-3">
+                                                    {teamMember?.name?.[0]?.toUpperCase() || 'T'}
+                                                </div>
+                                                <div>
+                                                    <p className="font-bold text-gray-900">{teamMember?.name || member.memberName}</p>
+                                                    <p className="text-xs text-gray-500">{teamMember?.role || 'Team Member'}</p>
+                                                </div>
+                                            </div>
+                                            <button 
+                                                onClick={() => setCurrentOrder(removeTeamMemberFromOrder(currentOrder, member.memberId))}
+                                                className="text-red-500 hover:text-red-700 p-2"
+                                                title="Remove member"
+                                            >
+                                                <i className="fas fa-times-circle text-lg"></i>
+                                            </button>
+                                        </div>
+                                        
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                            <div>
+                                                <label className="block text-xs font-medium text-gray-700 mb-1">Budget ({currentOrder.currency})</label>
+                                                <input 
+                                                    type="number" 
+                                                    value={member.budget || 0}
+                                                    onChange={(e) => setCurrentOrder(updateTeamMemberBudget(currentOrder, member.memberId, e.target.value))}
+                                                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                                    placeholder="0"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-gray-700 mb-1">Paid Amount</label>
+                                                <input 
+                                                    type="number" 
+                                                    value={member.paidAmount || 0}
+                                                    disabled
+                                                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-100"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-gray-700 mb-1">Payment Status</label>
+                                                <div className={`w-full px-3 py-2 text-sm rounded-lg font-medium text-center ${
+                                                    member.paymentStatus === 'Paid' ? 'bg-green-100 text-green-700' :
+                                                    member.paymentStatus === 'Partial' ? 'bg-yellow-100 text-yellow-700' :
+                                                    'bg-red-100 text-red-700'
+                                                }`}>
+                                                    {member.paymentStatus || 'Pending'}
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
-                                </div>
-                                <div className="p-4 md:p-6">
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Order ID</label>
-                                            <input type="text" value={currentOrder.id} disabled className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-100" />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Client Name *</label>
-                                            <input type="text" value={currentOrder.clientName} onChange={(e) => setCurrentOrder({...currentOrder, clientName: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="Enter client name" />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Client Phone *</label>
-                                            <input type="text" value={currentOrder.clientPhone} onChange={(e) => setCurrentOrder({...currentOrder, clientPhone: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="+880..." />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Service Type</label>
-                                            <select value={currentOrder.serviceType} onChange={(e) => setCurrentOrder({...currentOrder, serviceType: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                                                <option value="Corporate Video">Corporate Video</option>
-                                                <option value="Product Promo">Product Promo</option>
-                                                <option value="Social Media Ads">Social Media Ads</option>
-                                                <option value="Training Videos">Training Videos</option>
-                                                <option value="Property Showcase">Property Showcase</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Price</label>
-                                            <input type="number" value={currentOrder.price} onChange={(e) => setCurrentOrder({...currentOrder, price: parseFloat(e.target.value) || 0})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Currency</label>
-                                            <select value={currentOrder.currency} onChange={(e) => setCurrentOrder({...currentOrder, currency: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                                                <option value="BDT">BDT</option>
-                                                <option value="USD">USD</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Team Budget</label>
-                                            <input type="number" value={currentOrder.teamBudget || 0} onChange={(e) => setCurrentOrder({...currentOrder, teamBudget: parseFloat(e.target.value) || 0})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Due Date</label>
-                                            <input type="date" value={currentOrder.dueDate} onChange={(e) => setCurrentOrder({...currentOrder, dueDate: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Assigned Editor</label>
-                                            <select value={currentOrder.assignedEditor || ''} onChange={(e) => setCurrentOrder({...currentOrder, assignedEditor: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                                                <option value="">Unassigned</option>
-                                                {team.filter(m => m.active).map(member => (
-                                                    <option key={member.id} value={member.id}>{member.name}</option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-                                            <select value={currentOrder.status} onChange={(e) => setCurrentOrder({...currentOrder, status: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                                                <option value="Fresh">Fresh</option>
-                                                <option value="Scripting">Scripting</option>
-                                                <option value="Editing">Editing</option>
-                                                <option value="Correction">Correction</option>
-                                                <option value="Final Delivery">Final Delivery</option>
-                                                <option value="Completed">Completed</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Payment Status</label>
-                                            <select value={currentOrder.paymentStatus} onChange={(e) => setCurrentOrder({...currentOrder, paymentStatus: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                                                <option value="Pending">Pending</option>
-                                                <option value="Partial">Partial</option>
-                                                <option value="Paid">Paid</option>
-                                            </select>
-                                        </div>
-                                        <div className="md:col-span-2">
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
-                                            <textarea value={currentOrder.notes || ''} onChange={(e) => setCurrentOrder({...currentOrder, notes: e.target.value})} rows="3" className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="Additional notes..."></textarea>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="p-4 md:p-6 border-t border-gray-200 flex flex-col-reverse sm:flex-row justify-end gap-2 sm:space-x-3">
-                                    <button onClick={() => setShowOrderModal(false)} className="w-full sm:w-auto px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50">Cancel</button>
-                                    <button 
-                                        onClick={handleSaveOrder} 
-                                        disabled={isSaving}
-                                        className={`w-full sm:w-auto px-4 py-2 rounded-lg font-medium flex items-center justify-center ${isSaving ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'} text-white`}
-                                    >
-                                        {isSaving ? (<><i className="fas fa-spinner fa-spin mr-2"></i>Saving...</>) : 'Save Order'}
-                                    </button>
-                                </div>
-                            </div>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="text-center py-8 text-gray-400 bg-gray-50 rounded-lg border-2 border-dashed border-gray-200">
+                            <i className="fas fa-user-plus text-3xl mb-2"></i>
+                            <p className="text-sm">No team members assigned yet</p>
+                            <p className="text-xs mt-1">Use the dropdown above to add team members</p>
                         </div>
                     )}
+                </div>
+            </div>
+            
+            {/* Footer */}
+            <div className="p-4 md:p-6 border-t border-gray-200 flex flex-col-reverse sm:flex-row justify-end gap-2 sm:space-x-3 bg-gray-50">
+                <button onClick={() => setShowOrderModal(false)} className="w-full sm:w-auto px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50">Cancel</button>
+                <button 
+                    onClick={handleSaveOrder} 
+                    disabled={isSaving}
+                    className={`w-full sm:w-auto px-4 py-2 rounded-lg font-medium flex items-center justify-center ${isSaving ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'} text-white`}
+                >
+                    {isSaving ? (<><i className="fas fa-spinner fa-spin mr-2"></i>Saving...</>) : 'Save Order'}
+                </button>
+            </div>
+        </div>
+    </div>
+)}
 
                     {/* ==================== CONTACT MODAL ==================== */}
                     {showContactModal && currentContact && (
@@ -4984,72 +5349,95 @@
                         </div>
                     )}
 
-                    {/* ==================== TEAM PAYMENT MODAL ==================== */}
-                    {showTeamPaymentModal && currentOrder && (
-                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-                            <div className="bg-white rounded-xl shadow-card w-full max-w-sm modal-content transform transition-all">
-                                <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50 rounded-t-xl">
-                                    <div>
-                                        <h3 className="text-lg font-bold text-gray-900">Team Payment</h3>
-                                        <p className="text-xs text-gray-500 mt-1">Project: {currentOrder.id}</p>
-                                    </div>
-                                    <button onClick={() => setShowTeamPaymentModal(false)} className="text-gray-400 hover:text-red-500 transition-colors">
-                                        <i className="fas fa-times text-xl"></i>
-                                    </button>
+                   {/* ==================== TEAM PAYMENT MODAL (FOR INDIVIDUAL MEMBER) ==================== */}
+{showTeamPaymentModal && currentOrder && (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div className="bg-white rounded-xl shadow-card w-full max-w-sm modal-content transform transition-all">
+            <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50 rounded-t-xl">
+                <div>
+                    <h3 className="text-lg font-bold text-gray-900">Team Payment</h3>
+                    <p className="text-xs text-gray-500 mt-1">Project: {currentOrder.id}</p>
+                    {/* Member Name দেখাও */}
+                    {(() => {
+                        const member = (currentOrder.assignedMembers || []).find(m => m.memberId === currentOrder.selectedMemberId);
+                        const teamMember = getTeamMemberById(currentOrder.selectedMemberId, team);
+                        return member ? (
+                            <p className="text-xs font-medium text-blue-600 mt-1">
+                                <i className="fas fa-user mr-1"></i>{teamMember.name}
+                            </p>
+                        ) : null;
+                    })()}
+                </div>
+                <button onClick={() => setShowTeamPaymentModal(false)} className="text-gray-400 hover:text-red-500 transition-colors">
+                    <i className="fas fa-times text-xl"></i>
+                </button>
+            </div>
+            
+            <div className="p-5 space-y-5">
+                {/* Member এর Budget Info */}
+                <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
+                    {(() => {
+                        const member = (currentOrder.assignedMembers || []).find(m => m.memberId === currentOrder.selectedMemberId);
+                        const budget = member?.budget || 0;
+                        const paidAmount = member?.paidAmount || 0;
+                        
+                        return (
+                            <>
+                                <div className="flex justify-between text-sm mb-2">
+                                    <span className="text-blue-600">Total Budget:</span>
+                                    <span className="font-bold text-gray-800">{formatCurrency(budget, currentOrder.currency)}</span>
                                 </div>
-                                
-                                <div className="p-5 space-y-5">
-                                    <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
-                                        <div className="flex justify-between text-sm mb-2">
-                                            <span className="text-blue-600">Total Budget:</span>
-                                            <span className="font-bold text-gray-800">{formatCurrency(currentOrder.teamBudget || 0, currentOrder.currency)}</span>
-                                        </div>
-                                        <div className="flex justify-between text-sm mb-2">
-                                            <span className="text-blue-600">Already Paid:</span>
-                                            <span className="font-bold text-green-600">{formatCurrency(currentOrder.teamPaidAmount || 0, currentOrder.currency)}</span>
-                                        </div>
-                                        <div className="border-t border-blue-200 mt-2 pt-2 flex justify-between text-sm">
-                                            <span className="font-bold text-blue-800">Remaining Due:</span>
-                                            <span className="font-bold text-red-500">{formatCurrency((currentOrder.teamBudget || 0) - (currentOrder.teamPaidAmount || 0), currentOrder.currency)}</span>
-                                        </div>
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-sm font-semibold text-gray-700 mb-2">Payment Amount</label>
-                                        <div className="relative">
-                                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                                <span className="text-gray-500 sm:text-sm">{currentOrder.currency === 'USD' ? '$' : '৳'}</span>
-                                            </div>
-                                            <input 
-                                                type="number" 
-                                                value={currentOrder.teamPaidAmount || ''} 
-                                                onChange={(e) => setCurrentOrder({...currentOrder, teamPaidAmount: e.target.value})}
-                                                className="w-full pl-8 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900 font-medium"
-                                                placeholder="Enter custom amount"
-                                            />
-                                        </div>
-                                    </div>
-
-                                    <div className="grid grid-cols-2 gap-3 pt-2">
-                                        <button 
-                                            onClick={() => handleSaveTeamPayment(currentOrder.teamPaidAmount, false)}
-                                            disabled={isSaving}
-                                            className="w-full py-3 bg-white border-2 border-blue-600 text-blue-600 rounded-xl font-bold hover:bg-blue-50 transition-colors"
-                                        >
-                                            {isSaving ? <i className="fas fa-spinner fa-spin"></i> : 'Save Custom'}
-                                        </button>
-                                        <button 
-                                            onClick={() => handleSaveTeamPayment(0, true)}
-                                            disabled={isSaving}
-                                            className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all flex justify-center items-center"
-                                        >
-                                            {isSaving ? <i className="fas fa-spinner fa-spin"></i> : <><i className="fas fa-check-circle mr-2"></i>Full Paid</>}
-                                        </button>
-                                    </div>
+                                <div className="flex justify-between text-sm mb-2">
+                                    <span className="text-blue-600">Already Paid:</span>
+                                    <span className="font-bold text-green-600">{formatCurrency(paidAmount, currentOrder.currency)}</span>
                                 </div>
-                            </div>
+                                <div className="border-t border-blue-200 mt-2 pt-2 flex justify-between text-sm">
+                                    <span className="font-bold text-blue-800">Remaining Due:</span>
+                                    <span className="font-bold text-red-500">{formatCurrency(budget - paidAmount, currentOrder.currency)}</span>
+                                </div>
+                            </>
+                        );
+                    })()}
+                </div>
+
+                {/* Payment Amount Input */}
+                <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Payment Amount</label>
+                    <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <span className="text-gray-500 sm:text-sm">{currentOrder.currency === 'USD' ? '$' : '৳'}</span>
                         </div>
-                    )}
+                        <input 
+                            type="number" 
+                            value={currentOrder.teamPaidAmount || ''} 
+                            onChange={(e) => setCurrentOrder({...currentOrder, teamPaidAmount: e.target.value})}
+                            className="w-full pl-8 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900 font-medium"
+                            placeholder="Enter custom amount"
+                        />
+                    </div>
+                </div>
+
+                {/* Payment Buttons */}
+                <div className="grid grid-cols-2 gap-3 pt-2">
+                    <button 
+                        onClick={() => handleSaveTeamPayment(currentOrder.teamPaidAmount, false)}
+                        disabled={isSaving}
+                        className="w-full py-3 bg-white border-2 border-blue-600 text-blue-600 rounded-xl font-bold hover:bg-blue-50 transition-colors"
+                    >
+                        {isSaving ? <i className="fas fa-spinner fa-spin"></i> : 'Save Custom'}
+                    </button>
+                    <button 
+                        onClick={() => handleSaveTeamPayment(0, true)}
+                        disabled={isSaving}
+                        className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all flex justify-center items-center"
+                    >
+                        {isSaving ? <i className="fas fa-spinner fa-spin"></i> : <><i className="fas fa-check-circle mr-2"></i>Full Paid</>}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+)}
                     
                                                           {/* ==================== ACTIVITY LOG MODAL (DETAILED + NO DELETE) ==================== */}
                     {showActivityLogModal && (
@@ -5248,4 +5636,4 @@
         ReactDOM.render(<Dashboard />, document.getElementById('root'));
     </script>
 </body>
-</html>
+</html>6 
