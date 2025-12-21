@@ -4292,13 +4292,20 @@ const toggleOrderSelection = (orderId) => {
     )}
 </div>
 
-                                {/* Desktop Orders Table */}
+                               {/* Desktop Orders Table */}
 <div className="hidden lg:block bg-white rounded-xl shadow-card overflow-hidden">
     <div className="overflow-x-auto">
         <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
                 <tr>
-                    <th className="px-4 py-3 text-left w-10"><input type="checkbox" className="rounded border-gray-300 text-blue-600" checked={selectedOrders.length === filteredOrders.length && filteredOrders.length > 0} onChange={(e) => e.target.checked ? setSelectedOrders(filteredOrders.map(o => o.id)) : setSelectedOrders([])}/></th>
+                    <th className="px-4 py-3 text-left w-10">
+                        <input 
+                            type="checkbox" 
+                            className="rounded border-gray-300 text-blue-600" 
+                            checked={selectedOrders.length === filteredOrders.length && filteredOrders.length > 0} 
+                            onChange={(e) => e.target.checked ? setSelectedOrders(filteredOrders.map(o => o.id)) : setSelectedOrders([])}
+                        />
+                    </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Order Info</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Service</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Financials</th>
@@ -4311,67 +4318,86 @@ const toggleOrderSelection = (orderId) => {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
                 {filteredOrders.length === 0 ? (
-                    <tr><td colSpan="9" className="px-6 py-12 text-center text-gray-500">No orders found</td></tr>
+                    <tr>
+                        <td colSpan="9" className="px-6 py-12 text-center text-gray-500">
+                            <i className="fas fa-inbox text-4xl text-gray-300 mb-4 block"></i>
+                            <p>No orders found</p>
+                        </td>
+                    </tr>
                 ) : (
                     filteredOrders.map(order => {
-                        const teamMember = getTeamMemberById(order.assignedEditor, team);
-                        const lastPayment = order.paymentHistory?.slice(-1)[0];
-                        const isConfirmed = order.isDeliveryConfirmed === true;
+                        const lastPayment = order.paymentHistory && order.paymentHistory.length > 0 ? order.paymentHistory[order.paymentHistory.length - 1] : null;
+                        const assignedMembers = order.assignedMembers || [];
+                        const totalTeamBudget = assignedMembers.reduce((sum, m) => sum + (m.budget || 0), 0);
+                        const legacyEditor = order.assignedEditor && assignedMembers.length === 0 ? getTeamMemberById(order.assignedEditor, team) : null;
+                        const orderOverdue = isOverdue(order.dueDate) && order.status !== 'Completed';
+                        const dueAmount = (order.price || 0) - (order.paidAmount || 0);
+                        
                         return (
-                            <tr key={order.id} className={`hover:bg-gray-50 ${order.status === 'Fresh' ? 'new-order' : ''} ${isConfirmed ? 'bg-green-50' : ''}`}>
-                                <td className="px-4 py-4"><input type="checkbox" className="rounded border-gray-300 text-blue-600" checked={selectedOrders.includes(order.id)} onChange={() => toggleOrderSelection(order.id)}/></td>
+                            <tr key={order.id} className={"hover:bg-gray-50 " + (order.status === 'Fresh' ? 'new-order ' : '') + (orderOverdue ? 'overdue' : '')}>
+                                <td className="px-4 py-4">
+                                    <input 
+                                        type="checkbox" 
+                                        className="rounded border-gray-300 text-blue-600" 
+                                        checked={selectedOrders.includes(order.id)} 
+                                        onChange={() => toggleOrderSelection(order.id)}
+                                    />
+                                </td>
+                                
                                 <td className="px-4 py-4 whitespace-nowrap">
-                                    <div className="flex items-center">
-                                        {isConfirmed && (
-                                            <span className="w-2 h-2 bg-green-500 rounded-full mr-2" title="Delivery Confirmed"></span>
-                                        )}
-                                        <div>
-                                            <div className="text-sm font-bold text-gray-900">{order.id}</div>
-                                            <div className="text-xs text-gray-500">{order.clientName}</div>
-                                            {isConfirmed && (
-                                                <span className="text-xs text-green-600 font-medium">
-                                                    <i className="fas fa-check-circle mr-1"></i>Confirmed
-                                                </span>
-                                            )}
-                                        </div>
+                                    <div className="text-sm font-bold text-gray-900">{order.id}</div>
+                                    <div className="text-xs text-gray-500">{order.clientName}</div>
+                                    <div className="text-xs text-gray-400">{order.clientPhone}</div>
+                                </td>
+                                
+                                <td className="px-4 py-4 whitespace-nowrap">
+                                    <div className="text-sm text-gray-900">{order.serviceType}</div>
+                                    <div className={"text-xs " + (orderOverdue ? 'text-red-600 font-bold' : 'text-gray-500')}>
+                                        Due: {order.dueDate}
                                     </div>
                                 </td>
-                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">{order.serviceType}</td>
+                                
                                 <td className="px-4 py-4 whitespace-nowrap">
                                     <div className="text-sm font-bold text-gray-900">{formatCurrency(order.price, order.currency)}</div>
                                     <div className="text-xs text-blue-600 cursor-pointer" onClick={() => handleEditTeamBudget(order)}>
-                                        Team Total: {formatCurrency(calculateTotalTeamBudget(order), order.currency)} <i className="fas fa-edit"></i>
+                                        Team: {formatCurrency(totalTeamBudget > 0 ? totalTeamBudget : (order.teamBudget || 0), order.currency)} <i className="fas fa-edit"></i>
+                                    </div>
+                                    <div className={"text-xs font-medium " + (dueAmount > 0 ? 'text-red-600' : 'text-green-600')}>
+                                        Due: {formatCurrency(dueAmount, order.currency)}
                                     </div>
                                 </td>
-                                <td className="px-4 py-4 whitespace-nowrap">
+                                
+                                <td className="px-4 py-4">
                                     <div className="space-y-1">
-                                        {(order.assignedMembers || []).length > 0 ? (
-                                            (order.assignedMembers || []).map(member => {
+                                        {assignedMembers.length > 0 ? (
+                                            assignedMembers.map(member => {
                                                 const teamMember = team.find(t => t.id === member.memberId);
                                                 return (
                                                     <div key={member.memberId} className="flex items-center justify-between text-xs bg-blue-50 px-2 py-1 rounded">
-                                                        <span className="font-medium text-gray-700">{teamMember?.name || member.memberName}</span>
+                                                        <span className="font-medium text-gray-700">{teamMember ? teamMember.name : member.memberName}</span>
                                                         <span className="text-blue-600 font-bold">{formatCurrency(member.budget || 0, order.currency)}</span>
                                                     </div>
                                                 );
                                             })
-                                        ) : order.assignedEditor ? (
+                                        ) : legacyEditor ? (
                                             <div className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded">
-                                                {getTeamMemberById(order.assignedEditor, team).name} (Legacy)
+                                                {legacyEditor.name} (Legacy)
                                             </div>
                                         ) : (
                                             <div className="text-xs text-gray-400 italic">Not assigned</div>
                                         )}
-                                        <button 
-                                            onClick={() => handleEditOrder(order)} 
-                                            className="text-xs text-blue-600 hover:text-blue-800 font-medium mt-1"
-                                        >
-                                            <i className="fas fa-plus-circle mr-1"></i>Manage Team
+                                        <button onClick={() => handleEditOrder(order)} className="text-xs text-blue-600 hover:text-blue-800 font-medium">
+                                            <i className="fas fa-edit mr-1"></i>Manage
                                         </button>
                                     </div>
                                 </td>
+                                
                                 <td className="px-4 py-4 whitespace-nowrap">
-                                    <select value={order.status} onChange={(e) => updateOrderStatus(order.id, e.target.value)} className={`text-xs rounded-full px-2 py-1 font-medium ${getStatusClass(order.status)} border-0`}>
+                                    <select 
+                                        value={order.status} 
+                                        onChange={(e) => updateOrderStatus(order.id, e.target.value)} 
+                                        className={"text-xs rounded-full px-2 py-1 font-medium border-0 " + getStatusClass(order.status)}
+                                    >
                                         <option value="Fresh">Fresh</option>
                                         <option value="Scripting">Scripting</option>
                                         <option value="Editing">Editing</option>
@@ -4380,29 +4406,32 @@ const toggleOrderSelection = (orderId) => {
                                         <option value="Completed">Completed</option>
                                     </select>
                                 </td>
+                                
                                 <td className="px-4 py-4 whitespace-nowrap">
-                                    <span className={`inline-block px-2 py-1 text-xs rounded-full ${getPaymentClass(order.paymentStatus)}`}>{order.paymentStatus}</span>
+                                    <span className={"inline-block px-2 py-1 text-xs rounded-full " + getPaymentClass(order.paymentStatus)}>
+                                        {order.paymentStatus}
+                                    </span>
                                     <div className="text-xs text-gray-500 mt-1">Paid: {formatCurrency(order.paidAmount || 0, order.currency)}</div>
                                 </td>
+                                
                                 <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-600">
                                     {lastPayment ? lastPayment.method : '-'}
                                 </td>
+                                
                                 <td className="px-4 py-4 whitespace-nowrap">
-                                    <div className="flex items-center space-x-2">
-                                        {/* Confirm Delivery Button - Desktop */}
-                                        {!isConfirmed && order.status === 'Completed' && (
-                                            <button 
-                                                onClick={() => handleConfirmDelivery(order.id)} 
-                                                className="text-green-600 bg-green-100 px-2 py-1 rounded text-xs font-medium hover:bg-green-200"
-                                                title="Confirm Delivery"
-                                            >
-                                                <i className="fas fa-check-circle mr-1"></i>Confirm
-                                            </button>
-                                        )}
-                                        <button onClick={() => openWhatsApp(order.clientPhone)} className="text-green-600 hover:text-green-800"><i className="fab fa-whatsapp"></i></button>
-                                        <button onClick={() => handleEditOrder(order)} className="text-blue-600 hover:text-blue-800"><i className="fas fa-edit"></i></button>
-                                        <button onClick={() => handleAddPayment(order)} className="text-purple-600 hover:text-purple-800"><i className="fas fa-money-bill-wave"></i></button>
-                                        <button onClick={() => handleDeleteOrder(order.id)} className="text-red-600 hover:text-red-800"><i className="fas fa-trash"></i></button>
+                                    <div className="flex space-x-2">
+                                        <button onClick={() => openWhatsApp(order.clientPhone)} className="text-green-600 hover:text-green-800">
+                                            <i className="fab fa-whatsapp"></i>
+                                        </button>
+                                        <button onClick={() => handleEditOrder(order)} className="text-blue-600 hover:text-blue-800">
+                                            <i className="fas fa-edit"></i>
+                                        </button>
+                                        <button onClick={() => handleAddPayment(order)} className="text-purple-600 hover:text-purple-800">
+                                            <i className="fas fa-money-bill-wave"></i>
+                                        </button>
+                                        <button onClick={() => handleDeleteOrder(order.id)} className="text-red-600 hover:text-red-800">
+                                            <i className="fas fa-trash"></i>
+                                        </button>
                                     </div>
                                 </td>
                             </tr>
@@ -4410,11 +4439,11 @@ const toggleOrderSelection = (orderId) => {
                     })
                 )}
             </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
+        </table>
+    </div>
+</div>
+</div>
+)}
 
                         {/* Team Tab */}
                         {activeTab === 'team' && (
