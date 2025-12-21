@@ -1430,66 +1430,94 @@ const [currentTime, setCurrentTime] = React.useState(new Date());
             };
 
                         // =============================================
-            // ENHANCED ACTIVITY LOGGER - Track EVERYTHING
-            // =============================================
-            const logActivity = async (action, details, extraData = {}) => {
-                try {
-                    const { db } = initializeFirebase();
-                    const logEntry = {
-                        id: String(Date.now()) + '_' + Math.random().toString(36).substr(2, 9),
-                        action: action,
-                        details: details,
-                        extraData: extraData,
-                        performedBy: {
-                            email: currentUser?.email || 'Unknown',
-                            name: currentUser?.displayName || 'Unknown',
-                            uid: currentUser?.uid || 'Unknown'
-                        },
-                        timestamp: new Date().toISOString(),
-                        date: new Date().toLocaleDateString('en-GB'),
-                        time: new Date().toLocaleTimeString('en-US', { hour12: true }),
-                        userAgent: navigator.userAgent,
-                        platform: navigator.platform
-                    };
-                    
-                    await db.collection('activityLogs').doc(logEntry.id).set(logEntry);
-                } catch (error) {
-                    console.error('Error logging activity:', error);
-                }
-            };
-
-            // Log with before/after comparison for detailed tracking
-            const logDetailedChange = async (action, itemType, itemId, oldData, newData) => {
-                const changes = [];
-                
-                // Compare old and new data to find changes
-                if (oldData && newData) {
-                    Object.keys(newData).forEach(key => {
-                        if (JSON.stringify(oldData[key]) !== JSON.stringify(newData[key])) {
-                            changes.push({
-                                field: key,
-                                oldValue: oldData[key],
-                                newValue: newData[key]
-                            });
+// ENHANCED ACTIVITY LOGGER - Track EVERYTHING
+// =============================================
+const logActivity = React.useCallback(async (action, details, extraData = {}) => {
+    try {
+        const { db } = initializeFirebase();
+        
+        // Get current user from state or localStorage
+        const user = currentUser || LocalStorageService.getCurrentUser();
+        
+        // Clean extraData - remove undefined values
+        const cleanExtraData = {};
+        if (extraData && typeof extraData === 'object') {
+            Object.keys(extraData).forEach(key => {
+                if (extraData[key] !== undefined && extraData[key] !== null) {
+                    // If it's an object, clean it recursively
+                    if (typeof extraData[key] === 'object' && !Array.isArray(extraData[key])) {
+                        const cleaned = {};
+                        Object.keys(extraData[key]).forEach(subKey => {
+                            if (extraData[key][subKey] !== undefined && extraData[key][subKey] !== null) {
+                                cleaned[subKey] = extraData[key][subKey];
+                            }
+                        });
+                        if (Object.keys(cleaned).length > 0) {
+                            cleanExtraData[key] = cleaned;
                         }
-                    });
+                    } else {
+                        cleanExtraData[key] = extraData[key];
+                    }
                 }
-                
-                const details = changes.length > 0 
-                    ? `Updated ${itemType} (${itemId}): ${changes.map(c => `${c.field}: "${c.oldValue || 'empty'}" → "${c.newValue}"`).join(', ')}`
-                    : `Updated ${itemType} (${itemId})`;
-                
-                await logActivity(action, details, {
-                    itemType,
-                    itemId,
-                    changes,
-                    oldData,
-                    newData
-                });
-            };
+            });
+        }
+        
+        const logEntry = {
+            id: String(Date.now()) + '_' + Math.random().toString(36).substr(2, 9),
+            action: action || 'UNKNOWN_ACTION',
+            details: details || 'No details provided',
+            extraData: cleanExtraData,
+            performedBy: {
+                email: user?.email || 'Unknown',
+                name: user?.displayName || user?.email?.split('@')[0] || 'Unknown',
+                uid: user?.uid || 'Unknown'
+            },
+            timestamp: new Date().toISOString(),
+            date: new Date().toLocaleDateString('en-GB'),
+            time: new Date().toLocaleTimeString('en-US', { hour12: true }),
+            userAgent: navigator.userAgent || 'Unknown',
+            platform: navigator.platform || 'Unknown'
+        };
+        
+        await db.collection('activityLogs').doc(logEntry.id).set(logEntry);
+    } catch (error) {
+        console.error('Error logging activity:', error);
+        // Don't throw error, just log it so app continues working
+    }
+}, [currentUser]);
 
-            // Remove the Loading Spinner immediately after React Mounts
-            React.useLayoutEffect(() => {
+// Log with before/after comparison for detailed tracking
+const logDetailedChange = React.useCallback(async (action, itemType, itemId, oldData, newData) => {
+    const changes = [];
+    
+    // Compare old and new data to find changes
+    if (oldData && newData) {
+        Object.keys(newData).forEach(key => {
+            if (JSON.stringify(oldData[key]) !== JSON.stringify(newData[key])) {
+                changes.push({
+                    field: key,
+                    oldValue: oldData[key],
+                    newValue: newData[key]
+                });
+            }
+        });
+    }
+    
+    const details = changes.length > 0 
+        ? `Updated ${itemType} (${itemId}): ${changes.map(c => `${c.field}: "${c.oldValue || 'empty'}" → "${c.newValue}"`).join(', ')}`
+        : `Updated ${itemType} (${itemId})`;
+    
+    await logActivity(action, details, {
+        itemType,
+        itemId,
+        changes,
+        oldData,
+        newData
+    });
+}, [logActivity]);
+
+// Remove the Loading Spinner immediately after React Mounts
+React.useLayoutEffect(() => {
                 const loader = document.getElementById('startup-loader');
                 if (loader) {
                     loader.style.opacity = '0';
@@ -1694,21 +1722,10 @@ const financials = React.useMemo(() => {
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     
-    // Filter orders
+    // Filter orders for current month
     const activeOrders = orders.filter(order => {
         if (!order || !order.createdAt) return false;
-        
-        const orderDate = new Date(order.createdAt);
-        const isConfirmed = order.isDeliveryConfirmed === true;
-        const isPending = !isConfirmed;
-        const isWithin7Days = orderDate >= sevenDaysAgo;
-        const isCurrentMonth = order.createdAt && order.createdAt.startsWith(selectedMonth);
-        
-        // Pending orders সব সময় দেখাবে
-        if (isPending) return true;
-        
-        // Confirmed orders শুধু current month এবং 7 দিনের মধ্যে হলে
-        return isConfirmed && isCurrentMonth && isWithin7Days;
+        return order.createdAt.startsWith(selectedMonth);
     });
     
     // Filter costs for current month
@@ -1717,72 +1734,125 @@ const financials = React.useMemo(() => {
         return cost.createdAt.startsWith(selectedMonth);
     });
 
-    // ===== CONFIRMED INCOME =====
-const confirmedIncome = activeOrders
-    .filter(order => order.isDeliveryConfirmed === true)
-    .reduce((sum, order) => {
-        let amount = parseFloat(order.price) || 0;
+    // ===== CONFIRMED INCOME (Client থেকে যা পেয়েছি) =====
+    const confirmedIncome = activeOrders.reduce((sum, order) => {
+        let paidAmount = parseFloat(order.paidAmount) || 0;
         if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
-            amount = order.currency === 'USD' 
-                ? amount * exchangeRate 
-                : amount / exchangeRate;
+            paidAmount = order.currency === 'USD' 
+                ? paidAmount * exchangeRate 
+                : paidAmount / exchangeRate;
         }
-        return sum + amount;
+        return sum + paidAmount;
     }, 0);
 
-    // ===== PENDING INCOME =====
-const pendingIncome = activeOrders
-    .filter(order => order.isDeliveryConfirmed !== true)
-    .reduce((sum, order) => {
-        let amount = parseFloat(order.price) || 0;
+    // ===== PENDING INCOME (Client এর বাকি) =====
+    const pendingIncome = activeOrders.reduce((sum, order) => {
+        const price = parseFloat(order.price) || 0;
+        const paid = parseFloat(order.paidAmount) || 0;
+        let dueAmount = price - paid;
         if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
-            amount = order.currency === 'USD' 
-                ? amount * exchangeRate 
-                : amount / exchangeRate;
+            dueAmount = order.currency === 'USD' 
+                ? dueAmount * exchangeRate 
+                : dueAmount / exchangeRate;
         }
-        return sum + amount;
+        return sum + dueAmount;
     }, 0);
 
-   // ===== EXPENSES (Team Budget) =====
-const totalExpenses = activeOrders.reduce((sum, order) => {
-    const membersBudget = (order.assignedMembers || []).reduce((memberSum, member) => {
-        return memberSum + (parseFloat(member.budget) || 0);
+    // ===== EXPENSES (Team কে যা দিয়েছি - Paid Amount) =====
+    const totalExpenses = activeOrders.reduce((sum, order) => {
+        // New format - multiple members
+        const membersPaid = (order.assignedMembers || []).reduce((memberSum, member) => {
+            return memberSum + (parseFloat(member.paidAmount) || 0);
+        }, 0);
+        // Legacy format
+        const legacyPaid = parseFloat(order.teamPaidAmount) || 0;
+        let paidAmount = membersPaid > 0 ? membersPaid : legacyPaid;
+        
+        if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
+            paidAmount = order.currency === 'USD' 
+                ? paidAmount * exchangeRate 
+                : paidAmount / exchangeRate;
+        }
+        return sum + paidAmount;
     }, 0);
-    const legacyBudget = parseFloat(order.teamBudget) || 0;
-    let budgetAmount = membersBudget > 0 ? membersBudget : legacyBudget;
-    
-    if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
-        budgetAmount = order.currency === 'USD' 
-            ? budgetAmount * exchangeRate 
-            : budgetAmount / exchangeRate;
-    }
-    return sum + budgetAmount;
-}, 0);
+
+    // ===== TEAM PENDING (Team এর বাকি - Budget - Paid) =====
+    const teamPending = activeOrders.reduce((sum, order) => {
+        // New format - multiple members
+        const membersPending = (order.assignedMembers || []).reduce((memberSum, member) => {
+            const budget = parseFloat(member.budget) || 0;
+            const paid = parseFloat(member.paidAmount) || 0;
+            return memberSum + (budget - paid);
+        }, 0);
+        // Legacy format
+        const legacyBudget = parseFloat(order.teamBudget) || 0;
+        const legacyPaid = parseFloat(order.teamPaidAmount) || 0;
+        let pendingAmount = membersPending > 0 ? membersPending : (legacyBudget - legacyPaid);
+        
+        if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
+            pendingAmount = order.currency === 'USD' 
+                ? pendingAmount * exchangeRate 
+                : pendingAmount / exchangeRate;
+        }
+        return sum + Math.max(0, pendingAmount); // Negative হলে 0
+    }, 0);
+
+    // ===== TOTAL TEAM BUDGET (Reference এর জন্য) =====
+    const totalTeamBudget = activeOrders.reduce((sum, order) => {
+        const membersBudget = (order.assignedMembers || []).reduce((memberSum, member) => {
+            return memberSum + (parseFloat(member.budget) || 0);
+        }, 0);
+        const legacyBudget = parseFloat(order.teamBudget) || 0;
+        let budgetAmount = membersBudget > 0 ? membersBudget : legacyBudget;
+        
+        if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
+            budgetAmount = order.currency === 'USD' 
+                ? budgetAmount * exchangeRate 
+                : budgetAmount / exchangeRate;
+        }
+        return sum + budgetAmount;
+    }, 0);
 
     // ===== MANUAL COSTS =====
-const totalCost = activeCosts.reduce((sum, cost) => {
-    let amount = parseFloat(cost.amount) || 0;
-    if (cost.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
-        amount = cost.currency === 'USD' 
-            ? amount * exchangeRate 
-            : amount / exchangeRate;
-    }
-    return sum + amount;
-}, 0);
+    const totalCost = activeCosts.reduce((sum, cost) => {
+        let amount = parseFloat(cost.amount) || 0;
+        if (cost.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
+            amount = cost.currency === 'USD' 
+                ? amount * exchangeRate 
+                : amount / exchangeRate;
+        }
+        return sum + amount;
+    }, 0);
 
-    // ===== NET PROFIT =====
+    // ===== NET PROFIT (Confirmed - Expenses - Cost) =====
     const netProfit = confirmedIncome - totalExpenses - totalCost;
 
-    // ===== PENDING ORDERS COUNT =====
-    const pendingOrdersCount = activeOrders.filter(order => order.isDeliveryConfirmed !== true).length;
+    // ===== COUNTS =====
+    const pendingOrdersCount = activeOrders.filter(order => {
+        const paid = parseFloat(order.paidAmount) || 0;
+        const price = parseFloat(order.price) || 0;
+        return paid < price;
+    }).length;
+
+    const teamPendingCount = activeOrders.filter(order => {
+        const membersPending = (order.assignedMembers || []).some(member => {
+            const budget = parseFloat(member.budget) || 0;
+            const paid = parseFloat(member.paidAmount) || 0;
+            return paid < budget;
+        });
+        return membersPending;
+    }).length;
 
     return {
         confirmedIncome: confirmedIncome || 0,
         pendingIncome: pendingIncome || 0,
         totalExpenses: totalExpenses || 0,
+        teamPending: teamPending || 0,
+        totalTeamBudget: totalTeamBudget || 0,
         totalCost: totalCost || 0,
         netProfit: netProfit || 0,
-        pendingOrdersCount: pendingOrdersCount || 0
+        pendingOrdersCount: pendingOrdersCount || 0,
+        teamPendingCount: teamPendingCount || 0
     };
 }, [orders, costs, selectedMonth, exchangeRate]);
 
@@ -2274,28 +2344,15 @@ React.useEffect(() => {
                     setIsAuthenticated(true);
                     showToast(`Welcome back, ${user.displayName || user.email.split('@')[0]}!`, 'success');
                                         // Log login activity
-                    setTimeout(async () => {
-                        try {
-                            const { db } = initializeFirebase();
-                            await db.collection('activityLogs').doc(String(Date.now())).set({
-                                id: String(Date.now()),
-                                action: 'ADMIN_LOGIN',
-                                details: `Admin logged in: ${user.email}`,
-                                performedBy: {
-                                    email: user.email,
-                                    name: user.displayName || user.email.split('@')[0],
-                                    uid: user.uid
-                                },
-                                timestamp: new Date().toISOString(),
-                                date: new Date().toLocaleDateString('en-GB'),
-                                time: new Date().toLocaleTimeString('en-US', { hour12: true }),
-                                userAgent: navigator.userAgent,
-                                platform: navigator.platform
-                            });
-                        } catch (e) {
-                            console.log('Login log error:', e);
-                        }
-                    }, 1000);
+setTimeout(async () => {
+    try {
+        await logActivity('ADMIN_LOGIN', `Admin logged in: ${user.email}`, {
+            loginTime: new Date().toISOString()
+        });
+    } catch (e) {
+        console.log('Login log error:', e);
+    }
+}, 1000);
                 } catch (error) {
                     console.error("Login error:", error);
                     let errorMessage = 'Login failed. Please try again.';
@@ -4593,7 +4650,7 @@ const toggleOrderSelection = (orderId) => {
 
 {/* ========== FINANCIAL SUMMARY CARDS - SMART BUSINESS ========== */}
 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 md:gap-3 mb-4">
-    {/* Confirmed Income */}
+    {/* Confirmed Income (Client থেকে পাওয়া) */}
     <div className="bg-white rounded-lg shadow-card p-3 border-l-4 border-green-500">
         <div className="flex items-center justify-between">
             <div className="min-w-0 flex-1">
@@ -4601,6 +4658,7 @@ const toggleOrderSelection = (orderId) => {
                 <p className="text-sm md:text-base font-bold text-green-600 truncate">
                     {formatCurrency(financials.confirmedIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
                 </p>
+                <p className="text-xs text-gray-400">Client Paid</p>
             </div>
             <div className="p-2 rounded-full bg-green-100 text-green-600 flex-shrink-0 ml-1">
                 <i className="fas fa-check text-xs"></i>
@@ -4608,7 +4666,7 @@ const toggleOrderSelection = (orderId) => {
         </div>
     </div>
 
-    {/* Pending Income */}
+    {/* Pending Income (Client এর বাকি) */}
     <div className="bg-white rounded-lg shadow-card p-3 border-l-4 border-yellow-500">
         <div className="flex items-center justify-between">
             <div className="min-w-0 flex-1">
@@ -4616,6 +4674,7 @@ const toggleOrderSelection = (orderId) => {
                 <p className="text-sm md:text-base font-bold text-yellow-600 truncate">
                     {formatCurrency(financials.pendingIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
                 </p>
+                <p className="text-xs text-gray-400">Client Due</p>
             </div>
             <div className="p-2 rounded-full bg-yellow-100 text-yellow-600 flex-shrink-0 ml-1">
                 <i className="fas fa-clock text-xs"></i>
@@ -4623,7 +4682,7 @@ const toggleOrderSelection = (orderId) => {
         </div>
     </div>
 
-    {/* Expenses */}
+    {/* Expenses (Team কে দেওয়া) */}
     <div className="bg-white rounded-lg shadow-card p-3 border-l-4 border-orange-500">
         <div className="flex items-center justify-between">
             <div className="min-w-0 flex-1">
@@ -4631,14 +4690,31 @@ const toggleOrderSelection = (orderId) => {
                 <p className="text-sm md:text-base font-bold text-orange-600 truncate">
                     {formatCurrency(financials.totalExpenses, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
                 </p>
+                <p className="text-xs text-gray-400">Team Paid</p>
             </div>
             <div className="p-2 rounded-full bg-orange-100 text-orange-600 flex-shrink-0 ml-1">
+                <i className="fas fa-hand-holding-usd text-xs"></i>
+            </div>
+        </div>
+    </div>
+
+    {/* Team Pending (Team এর বাকি) 🆕 */}
+    <div className="bg-white rounded-lg shadow-card p-3 border-l-4 border-blue-500">
+        <div className="flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-gray-500 truncate">Team Due ({financials.teamPendingCount})</p>
+                <p className="text-sm md:text-base font-bold text-blue-600 truncate">
+                    {formatCurrency(financials.teamPending, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
+                </p>
+                <p className="text-xs text-gray-400">To Pay</p>
+            </div>
+            <div className="p-2 rounded-full bg-blue-100 text-blue-600 flex-shrink-0 ml-1">
                 <i className="fas fa-users text-xs"></i>
             </div>
         </div>
     </div>
 
-    {/* Cost */}
+    {/* Cost (Manual) */}
     <div className="bg-white rounded-lg shadow-card p-3 border-l-4 border-red-500">
         <div className="flex items-center justify-between">
             <div className="min-w-0 flex-1">
@@ -4646,6 +4722,7 @@ const toggleOrderSelection = (orderId) => {
                 <p className="text-sm md:text-base font-bold text-red-600 truncate">
                     {formatCurrency(financials.totalCost, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
                 </p>
+                <p className="text-xs text-gray-400">Manual</p>
             </div>
             <div className="p-2 rounded-full bg-red-100 text-red-600 flex-shrink-0 ml-1">
                 <i className="fas fa-receipt text-xs"></i>
@@ -4654,14 +4731,14 @@ const toggleOrderSelection = (orderId) => {
     </div>
 
     {/* Net Profit */}
-    <div className={`rounded-lg shadow-card p-3 col-span-2 ${financials.netProfit >= 0 ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white' : 'bg-gradient-to-r from-red-500 to-pink-600 text-white'}`}>
+    <div className={`rounded-lg shadow-card p-3 ${financials.netProfit >= 0 ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white' : 'bg-gradient-to-r from-red-500 to-pink-600 text-white'}`}>
         <div className="flex items-center justify-between">
             <div className="min-w-0 flex-1">
                 <p className="text-xs font-medium opacity-90 truncate">Net Profit</p>
                 <p className="text-sm md:text-base font-bold truncate">
                     {formatCurrency(financials.netProfit, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
                 </p>
-                <p className="text-xs opacity-75 mt-0.5">
+                <p className="text-xs opacity-75">
                     {financials.netProfit < 0 ? '📉 Loss' : '📈 Profit'}
                 </p>
             </div>
@@ -4672,12 +4749,12 @@ const toggleOrderSelection = (orderId) => {
     </div>
 </div>
 
-        {/* ========== PROFIT FORMULA - SMART ========== */}
+       {/* ========== PROFIT FORMULA - SMART ========== */}
 <div className="bg-white rounded-lg shadow-card p-3 md:p-4 mb-4">
     <h3 className="text-sm font-bold text-gray-900 mb-3 flex items-center">
         <i className="fas fa-calculator mr-2 text-blue-600 text-xs"></i>
         Profit Calculation
-        <span className="ml-2 text-xs font-normal text-gray-500">(Only confirmed orders count)</span>
+        <span className="ml-2 text-xs font-normal text-gray-500">(Real-time)</span>
     </h3>
     <div className="flex flex-wrap items-center justify-center gap-1 md:gap-2 text-center">
         <div className="bg-green-50 px-2 py-1.5 rounded-lg border border-green-200">
@@ -4695,23 +4772,36 @@ const toggleOrderSelection = (orderId) => {
             <p className="text-xs md:text-sm font-bold text-red-700">{formatCurrency(financials.totalCost, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
         </div>
         <span className="text-lg font-bold text-gray-400">=</span>
-        <div className={`px-2 py-1.5 rounded-lg border ${financials.netProfit >= 0 ? 'bg-blue-50 border-blue-200' : 'bg-red-50 border-red-200'}`}>
-            <p className={`text-xs font-medium ${financials.netProfit >= 0 ? 'text-blue-600' : 'text-red-600'}`}>Profit</p>
-            <p className={`text-xs md:text-sm font-bold ${financials.netProfit >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
+        <div className={`px-2 py-1.5 rounded-lg border ${financials.netProfit >= 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
+            <p className={`text-xs font-medium ${financials.netProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>Profit</p>
+            <p className={`text-xs md:text-sm font-bold ${financials.netProfit >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
                 {formatCurrency(financials.netProfit, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
             </p>
         </div>
     </div>
     
-    {/* Pending Warning */}
-    {financials.pendingOrdersCount > 0 && (
-        <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
-            <p className="text-xs text-yellow-700 text-center">
-                <i className="fas fa-exclamation-triangle mr-1"></i>
-                {financials.pendingOrdersCount} pending order(s) worth {formatCurrency(financials.pendingIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)} not included in profit yet
-            </p>
-        </div>
-    )}
+    {/* Warnings Section */}
+    <div className="mt-3 space-y-2">
+        {/* Client Pending Warning */}
+        {financials.pendingIncome > 0 && (
+            <div className="p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <p className="text-xs text-yellow-700 text-center">
+                    <i className="fas fa-user-clock mr-1"></i>
+                    Client Due: {formatCurrency(financials.pendingIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)} from {financials.pendingOrdersCount} order(s)
+                </p>
+            </div>
+        )}
+        
+        {/* Team Pending Warning */}
+        {financials.teamPending > 0 && (
+            <div className="p-2 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-xs text-blue-700 text-center">
+                    <i className="fas fa-users mr-1"></i>
+                    Team Due: {formatCurrency(financials.teamPending, CONFIG.DEFAULT_DISPLAY_CURRENCY)} to pay ({financials.teamPendingCount} member(s))
+                </p>
+            </div>
+        )}
+    </div>
 </div>
 
         {/* ========== MANUAL COSTS SECTION ========== */}
@@ -5805,14 +5895,251 @@ const toggleOrderSelection = (orderId) => {
                                 <option value="Completed">Completed</option>
                             </select>
                         </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">Payment Status</label>
-                            <select value={currentOrder.paymentStatus} onChange={(e) => setCurrentOrder({...currentOrder, paymentStatus: e.target.value})} className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                                <option value="Pending">Pending</option>
-                                <option value="Partial">Partial</option>
-                                <option value="Paid">Paid</option>
-                            </select>
+                        {/* ========== SECTION 3: Payment Information (RESPONSIVE FIX) ========== */}
+<div className="border-t pt-6 mt-6">
+    <h4 className="text-sm md:text-md font-bold text-gray-900 mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <span className="flex items-center">
+            <i className="fas fa-money-bill-wave mr-2 text-green-600"></i>
+            Payment Information
+        </span>
+        <span className={`px-3 py-1 text-xs sm:text-sm rounded-full font-medium self-start sm:self-auto ${
+            (currentOrder.paidAmount || 0) >= currentOrder.price ? 'bg-green-100 text-green-800' :
+            (currentOrder.paidAmount || 0) > 0 ? 'bg-yellow-100 text-yellow-800' :
+            'bg-red-100 text-red-800'
+        }`}>
+            {(currentOrder.paidAmount || 0) >= currentOrder.price ? '✅ Paid' :
+             (currentOrder.paidAmount || 0) > 0 ? '🟡 Partial' : '🔴 Pending'}
+        </span>
+    </h4>
+    
+    {/* Payment Summary Cards - RESPONSIVE */}
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3 mb-4">
+        <div className="bg-blue-50 p-2 sm:p-3 rounded-lg border border-blue-200">
+            <div className="flex justify-between items-center sm:flex-col sm:text-center">
+                <p className="text-xs text-blue-600 font-medium">Total Price</p>
+                <p className="text-sm sm:text-lg font-bold text-blue-800 truncate max-w-[120px] sm:max-w-full">
+                    {formatCurrency(currentOrder.price || 0, currentOrder.currency)}
+                </p>
+            </div>
+        </div>
+        <div className="bg-green-50 p-2 sm:p-3 rounded-lg border border-green-200">
+            <div className="flex justify-between items-center sm:flex-col sm:text-center">
+                <p className="text-xs text-green-600 font-medium">Paid</p>
+                <p className="text-sm sm:text-lg font-bold text-green-800 truncate max-w-[120px] sm:max-w-full">
+                    {formatCurrency(currentOrder.paidAmount || 0, currentOrder.currency)}
+                </p>
+            </div>
+        </div>
+        <div className="bg-red-50 p-2 sm:p-3 rounded-lg border border-red-200">
+            <div className="flex justify-between items-center sm:flex-col sm:text-center">
+                <p className="text-xs text-red-600 font-medium">Due</p>
+                <p className="text-sm sm:text-lg font-bold text-red-800 truncate max-w-[120px] sm:max-w-full">
+                    {formatCurrency((currentOrder.price || 0) - (currentOrder.paidAmount || 0), currentOrder.currency)}
+                </p>
+            </div>
+        </div>
+    </div>
+
+    {/* Payment History */}
+    {(currentOrder.paymentHistory || []).length > 0 && (
+        <div className="mb-4">
+            <p className="text-xs sm:text-sm font-semibold text-gray-700 mb-2 flex items-center">
+                <i className="fas fa-history mr-2 text-gray-400"></i>
+                Payment History
+            </p>
+            <div className="bg-gray-50 rounded-lg border border-gray-200 divide-y divide-gray-200 max-h-40 overflow-y-auto">
+                {(currentOrder.paymentHistory || []).map((payment, index) => (
+                    <div key={index} className="p-2 sm:p-3 flex items-center justify-between hover:bg-gray-100 gap-2">
+                        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+                            <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-white text-xs flex-shrink-0 ${
+                                payment.method === 'Cash' ? 'bg-green-500' :
+                                payment.method === 'bKash' ? 'bg-pink-500' :
+                                payment.method === 'Nagad' ? 'bg-orange-500' :
+                                payment.method === 'Rocket' ? 'bg-purple-500' :
+                                payment.method === 'Bank' ? 'bg-blue-500' : 'bg-gray-500'
+                            }`}>
+                                {payment.method === 'Cash' ? '💵' :
+                                 payment.method === 'bKash' ? 'bK' :
+                                 payment.method === 'Nagad' ? 'N' :
+                                 payment.method === 'Rocket' ? 'R' :
+                                 payment.method === 'Bank' ? '🏦' : '💰'}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                                <p className="text-xs sm:text-sm font-medium text-gray-900 truncate">
+                                    {formatCurrency(payment.amount, currentOrder.currency)}
+                                </p>
+                                <p className="text-xs text-gray-500 truncate">{payment.date} • {payment.method}</p>
+                            </div>
                         </div>
+                        <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+                            {payment.note && (
+                                <span className="hidden sm:inline text-xs text-gray-400 max-w-[60px] truncate" title={payment.note}>
+                                    "{payment.note}"
+                                </span>
+                            )}
+                            <button 
+                                type="button"
+                                onClick={() => {
+                                    if(confirm('Delete this payment record?')) {
+                                        const newHistory = [...(currentOrder.paymentHistory || [])];
+                                        newHistory.splice(index, 1);
+                                        const newPaidAmount = newHistory.reduce((sum, p) => sum + (p.amount || 0), 0);
+                                        setCurrentOrder({
+                                            ...currentOrder, 
+                                            paymentHistory: newHistory,
+                                            paidAmount: newPaidAmount,
+                                            paymentStatus: newPaidAmount >= currentOrder.price ? 'Paid' : newPaidAmount > 0 ? 'Partial' : 'Pending'
+                                        });
+                                    }
+                                }}
+                                className="text-red-400 hover:text-red-600 p-1"
+                                title="Delete payment"
+                            >
+                                <i className="fas fa-trash-alt text-xs"></i>
+                            </button>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    )}
+
+    {/* Add New Payment Section */}
+    {((currentOrder.price || 0) - (currentOrder.paidAmount || 0)) > 0 && (
+        <div className="bg-gradient-to-r from-green-50 to-blue-50 p-3 sm:p-4 rounded-xl border-2 border-dashed border-green-300">
+            <p className="text-xs sm:text-sm font-semibold text-gray-700 mb-3 flex items-center">
+                <i className="fas fa-plus-circle mr-2 text-green-500"></i>
+                Add New Payment
+            </p>
+            
+            {/* Amount Input */}
+            <div className="mb-3">
+                <label className="block text-xs font-medium text-gray-600 mb-1">Amount ({currentOrder.currency})</label>
+                <input 
+                    type="number" 
+                    value={currentOrder.newPaymentAmount || ''} 
+                    onChange={(e) => setCurrentOrder({...currentOrder, newPaymentAmount: parseFloat(e.target.value) || 0})}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                    placeholder="Enter amount"
+                    max={(currentOrder.price || 0) - (currentOrder.paidAmount || 0)}
+                />
+            </div>
+
+            {/* Payment Method Buttons - RESPONSIVE */}
+<div className="mb-3">
+    <label className="block text-xs font-medium text-gray-600 mb-2">Payment Method</label>
+    <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 sm:gap-2">
+        {[
+            { id: 'Cash', icon: '💵', bg: 'bg-green-100', border: 'border-green-500', ring: 'ring-green-300' },
+            { id: 'bKash', icon: '📱', bg: 'bg-pink-100', border: 'border-pink-500', ring: 'ring-pink-300' },
+            { id: 'Nagad', icon: '📲', bg: 'bg-orange-100', border: 'border-orange-500', ring: 'ring-orange-300' },
+            { id: 'Rocket', icon: '🚀', bg: 'bg-purple-100', border: 'border-purple-500', ring: 'ring-purple-300' },
+            { id: 'Bank', icon: '🏦', bg: 'bg-blue-100', border: 'border-blue-500', ring: 'ring-blue-300' },
+            { id: 'Card', icon: '💳', bg: 'bg-indigo-100', border: 'border-indigo-500', ring: 'ring-indigo-300' }
+        ].map(method => (
+                        <button
+                            key={method.id}
+                            type="button"
+                            onClick={() => setCurrentOrder({...currentOrder, newPaymentMethod: method.id})}
+                            className={`p-1.5 sm:p-2 rounded-lg border-2 text-center transition-all ${
+                                currentOrder.newPaymentMethod === method.id 
+                                    ? `${method.border} ${method.bg} ring-2 ${method.ring}` 
+                                    : 'border-gray-200 bg-white hover:border-gray-300'
+                            }`}
+                        >
+                            <div className="text-base sm:text-lg">{method.icon}</div>
+                            <div className="text-xs font-medium text-gray-700 truncate">{method.id}</div>
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {/* Date & Note - RESPONSIVE */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 mb-3">
+                <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
+                    <input 
+                        type="date" 
+                        value={currentOrder.newPaymentDate || new Date().toISOString().slice(0, 10)} 
+                        onChange={(e) => setCurrentOrder({...currentOrder, newPaymentDate: e.target.value})}
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                    />
+                </div>
+                <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Note (Optional)</label>
+                    <input 
+                        type="text" 
+                        value={currentOrder.newPaymentNote || ''} 
+                        onChange={(e) => setCurrentOrder({...currentOrder, newPaymentNote: e.target.value})}
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                        placeholder="e.g., Advance"
+                    />
+                </div>
+            </div>
+
+            {/* Add Payment Button */}
+            <button
+                type="button"
+                onClick={() => {
+                    const amount = currentOrder.newPaymentAmount || 0;
+                    const method = currentOrder.newPaymentMethod || '';
+                    const date = currentOrder.newPaymentDate || new Date().toISOString().slice(0, 10);
+                    const note = currentOrder.newPaymentNote || '';
+                    
+                    if (amount <= 0) {
+                        showToast('Please enter a valid amount', 'error');
+                        return;
+                    }
+                    if (!method) {
+                        showToast('Please select a payment method', 'error');
+                        return;
+                    }
+                    
+                    const maxAmount = (currentOrder.price || 0) - (currentOrder.paidAmount || 0);
+                    if (amount > maxAmount) {
+                        showToast(`Amount cannot exceed due amount (${formatCurrency(maxAmount, currentOrder.currency)})`, 'error');
+                        return;
+                    }
+                    
+                    const newPayment = { amount, method, date, note };
+                    const newHistory = [...(currentOrder.paymentHistory || []), newPayment];
+                    const newPaidAmount = (currentOrder.paidAmount || 0) + amount;
+                    const newStatus = newPaidAmount >= currentOrder.price ? 'Paid' : newPaidAmount > 0 ? 'Partial' : 'Pending';
+                    
+                    setCurrentOrder({
+                        ...currentOrder,
+                        paymentHistory: newHistory,
+                        paidAmount: newPaidAmount,
+                        paymentStatus: newStatus,
+                        newPaymentAmount: '',
+                        newPaymentMethod: '',
+                        newPaymentNote: ''
+                    });
+                    
+                    showToast(`Payment of ${formatCurrency(amount, currentOrder.currency)} added!`, 'success');
+                }}
+                disabled={!currentOrder.newPaymentAmount || !currentOrder.newPaymentMethod}
+                className={`w-full py-2 sm:py-2.5 rounded-lg font-medium flex items-center justify-center transition-all text-sm ${
+                    currentOrder.newPaymentAmount && currentOrder.newPaymentMethod
+                        ? 'bg-green-600 hover:bg-green-700 text-white shadow-lg'
+                        : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                }`}
+            >
+                <i className="fas fa-plus-circle mr-2"></i>
+                Add Payment
+            </button>
+        </div>
+    )}
+
+    {/* Full Paid Message */}
+    {((currentOrder.price || 0) - (currentOrder.paidAmount || 0)) <= 0 && currentOrder.price > 0 && (
+        <div className="bg-green-100 border border-green-300 rounded-xl p-3 sm:p-4 text-center">
+            <i className="fas fa-check-circle text-green-500 text-xl sm:text-2xl mb-2"></i>
+            <p className="text-green-800 font-medium text-sm sm:text-base">Payment Complete! ✅</p>
+            <p className="text-green-600 text-xs sm:text-sm">Total {formatCurrency(currentOrder.paidAmount, currentOrder.currency)} received</p>
+        </div>
+    )}
+</div>
                         <div className="md:col-span-2">
                             <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
                             <textarea value={currentOrder.notes || ''} onChange={(e) => setCurrentOrder({...currentOrder, notes: e.target.value})} rows="2" className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" placeholder="Additional notes..."></textarea>
