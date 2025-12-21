@@ -1,10 +1,22 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Motioncraft Owner Dashboard</title>
+    
+    <!-- Mobile Console (Eruda) -->
+<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+<script>eruda.init();</script>
+
+<!-- Error Catcher - এটা যোগ করো -->
+<script>
+    window.onerror = function(message, source, lineno, colno, error) {
+        alert("Error: " + message + "\n\nLine: " + lineno + "\n\nSource: " + source);
+        console.error("Full Error:", error);
+        return false;
+    };
+</script>
     
     <!-- DNS Prefetch -->
     <link rel="dns-prefetch" href="https://unpkg.com">
@@ -554,20 +566,21 @@
         // =============================================
         
         const CONFIG = {
-            DEFAULT_DISPLAY_CURRENCY: "BDT",
-            EXCHANGE_RATE_BDT_PER_USD: 105.25,
-            DEFAULT_ADMIN_EMAIL: "direct.motioncraft@gmail.com",
+    DEFAULT_DISPLAY_CURRENCY: "BDT",
+    DEFAULT_EXCHANGE_RATE: 120.00,
+    DEFAULT_ADMIN_EMAIL: "direct.motioncraft@gmail.com",
             DEFAULT_ADMIN_PASSWORD: "112233",
             LOCAL_STORAGE_KEYS: {
-                AUTH: "motioncraft_auth",
-                USER: "motioncraft_user",
-                ORDERS: "motioncraft_orders",
-                TEAM: "motioncraft_team",
-                CONTACTS: "motioncraft_contacts",
-                ANNOUNCEMENTS: "motioncraft_announcements",
-                ADMINS: "motioncraft_admins",
-                LAST_SYNC: "motioncraft_last_sync"
-            }
+    AUTH: "motioncraft_auth",
+    USER: "motioncraft_user",
+    ORDERS: "motioncraft_orders",
+    TEAM: "motioncraft_team",
+    CONTACTS: "motioncraft_contacts",
+    ANNOUNCEMENTS: "motioncraft_announcements",
+    ADMINS: "motioncraft_admins",
+    COSTS: "motioncraft_costs",
+    LAST_SYNC: "motioncraft_last_sync"
+}
         };
 
         // =============================================
@@ -862,19 +875,67 @@
             },
 
             async deleteAnnouncement(announcementId) {
-                const { db } = initializeFirebase();
-                try {
-                    await db.collection('announcements').doc(String(announcementId)).delete();
-                    const announcements = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.ANNOUNCEMENTS) || [];
-                    const filtered = announcements.filter(a => String(a.id) !== String(announcementId));
-                    LocalStorageService.set(CONFIG.LOCAL_STORAGE_KEYS.ANNOUNCEMENTS, filtered);
-                    return { success: true };
-                } catch (error) {
-                    console.error("Error deleting announcement:", error);
-                    throw error;
-                }
-            }
-        };
+    const { db } = initializeFirebase();
+    try {
+        await db.collection('announcements').doc(String(announcementId)).delete();
+        const announcements = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.ANNOUNCEMENTS) || [];
+        const filtered = announcements.filter(a => String(a.id) !== String(announcementId));
+        LocalStorageService.set(CONFIG.LOCAL_STORAGE_KEYS.ANNOUNCEMENTS, filtered);
+        return { success: true };
+    } catch (error) {
+        console.error("Error deleting announcement:", error);
+        throw error;
+    }
+},
+
+// ==================== COSTS MANAGEMENT ====================
+async getCosts() {
+    const { db } = initializeFirebase();
+    try {
+        const snapshot = await db.collection('costs').orderBy('createdAt', 'desc').get();
+        const costs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        LocalStorageService.set(CONFIG.LOCAL_STORAGE_KEYS.COSTS, costs);
+        return costs;
+    } catch (error) {
+        console.error("Error getting costs:", error);
+        return LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.COSTS) || [];
+    }
+},
+
+async saveCost(cost) {
+    const { db } = initializeFirebase();
+    try {
+        const costId = cost.id ? String(cost.id) : String(Date.now());
+        await db.collection('costs').doc(costId).set({ ...cost, id: costId });
+        const costs = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.COSTS) || [];
+        const existingIndex = costs.findIndex(c => String(c.id) === costId);
+        if (existingIndex >= 0) {
+            costs[existingIndex] = { ...cost, id: costId };
+        } else {
+            costs.unshift({ ...cost, id: costId });
+        }
+        LocalStorageService.set(CONFIG.LOCAL_STORAGE_KEYS.COSTS, costs);
+        return { success: true };
+    } catch (error) {
+        console.error("Error saving cost:", error);
+        throw error;
+    }
+},
+
+async deleteCost(costId) {
+    const { db } = initializeFirebase();
+    try {
+        await db.collection('costs').doc(String(costId)).delete();
+        const costs = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.COSTS) || [];
+        const filtered = costs.filter(c => String(c.id) !== String(costId));
+        LocalStorageService.set(CONFIG.LOCAL_STORAGE_KEYS.COSTS, filtered);
+        return { success: true };
+    } catch (error) {
+        console.error("Error deleting cost:", error);
+        throw error;
+    }
+}
+};
 
         // =============================================
         // UTILITY FUNCTIONS
@@ -919,9 +980,10 @@
             return name.split(' ').map(n => n[0]).join('').toUpperCase();
         };
 
-        const isOverdue = (dueDate) => {
-            return new Date(dueDate) < new Date();
-        };
+        const isOverdue = (dueDate, status) => {
+    if (status === 'Completed') return false;
+    return new Date(dueDate) < new Date();
+};
 
         const generateOrderId = (orders) => {
             if (orders.length === 0) return 'MC-001';
@@ -955,175 +1017,204 @@
         };
 
         // =============================================
-        // TOAST COMPONENT
-        // =============================================
+// TOAST COMPONENT
+// =============================================
 
-        const Toast = ({ message, type, onClose }) => {
-            React.useEffect(() => {
-                const timer = setTimeout(() => {
-                    onClose();
-                }, 3000);
-                return () => clearTimeout(timer);
-            }, [onClose]);
+const Toast = ({ message, type, onClose }) => {
+    const [isVisible, setIsVisible] = React.useState(true);
+    
+    React.useEffect(() => {
+        setIsVisible(true);
+        
+        const timer = setTimeout(() => {
+            setIsVisible(false);
+            setTimeout(onClose, 200);
+        }, 1500); // 1.5 seconds
+        
+        return () => clearTimeout(timer);
+    }, [message, type]);
 
-            return (
-                <div className={`toast toast-${type}`}>
-                    <div className="flex items-center justify-center">
-                        {type === 'success' && <i className="fas fa-check-circle mr-2"></i>}
-                        {type === 'error' && <i className="fas fa-exclamation-circle mr-2"></i>}
-                        {type === 'info' && <i className="fas fa-info-circle mr-2"></i>}
-                        <span>{message}</span>
-                    </div>
-                </div>
-            );
-        };
+    return (
+        <div 
+            className={`toast toast-${type}`}
+            style={{
+                opacity: isVisible ? 1 : 0,
+                transition: 'opacity 0.2s ease'
+            }}
+        >
+            <div className="flex items-center justify-center">
+                {type === 'success' && <i className="fas fa-check-circle mr-2"></i>}
+                {type === 'error' && <i className="fas fa-exclamation-circle mr-2"></i>}
+                {type === 'info' && <i className="fas fa-info-circle mr-2"></i>}
+                <span>{message}</span>
+            </div>
+        </div>
+    );
+};
 
         // =============================================
         // MOBILE ORDER CARD COMPONENT
         // =============================================
 
-        const MobileOrderCard = ({ order, team, onEdit, onPayment, onDelete, onStatusChange, onWhatsApp, onEditBudget }) => {
+        const MobileOrderCard = ({ order, team, onEdit, onPayment, onDelete, onStatusChange, onWhatsApp, onEditBudget, onConfirmDelivery }) => {
     const assignedMembers = order.assignedMembers || [];
     const totalTeamBudget = assignedMembers.reduce((sum, m) => sum + (m.budget || 0), 0);
     
-    // Backward compatibility
     const legacyEditor = order.assignedEditor && !assignedMembers.length 
         ? getTeamMemberById(order.assignedEditor, team) 
         : null;
+        
+    const lastPayment = order.paymentHistory && order.paymentHistory.length > 0 
+        ? order.paymentHistory[order.paymentHistory.length - 1] 
+        : null;
+    const paymentMethod = lastPayment ? lastPayment.method : null;
+    const dueAmount = (order.price || 0) - (order.paidAmount || 0);
+    const isConfirmed = order.isDeliveryConfirmed === true;
+
+    return (
+        <div className={`bg-white rounded-lg shadow-card p-4 mb-3 ${order.status === 'Fresh' ? 'new-order' : ''} ${isOverdue(order.dueDate) ? 'overdue' : ''} ${isConfirmed ? 'border-l-4 border-green-500' : ''}`}>
+            {/* Confirmed Badge */}
+            {isConfirmed && (
+                <div className="mb-2 px-2 py-1 bg-green-100 text-green-700 text-xs font-medium rounded-full inline-flex items-center">
+                    <i className="fas fa-check-circle mr-1"></i> Delivery Confirmed
+                </div>
+            )}
             
-            const lastPayment = order.paymentHistory && order.paymentHistory.length > 0 
-                ? order.paymentHistory[order.paymentHistory.length - 1] 
-                : null;
-            const paymentMethod = lastPayment ? lastPayment.method : null;
-            const dueAmount = (order.price || 0) - (order.paidAmount || 0);
-
-            return (
-                <div className={`bg-white rounded-lg shadow-card p-4 mb-3 ${order.status === 'Fresh' ? 'new-order' : ''} ${isOverdue(order.dueDate) ? 'overdue' : ''}`}>
-                    <div className="flex justify-between items-start mb-3">
-                        <div>
-                            <div className="font-bold text-gray-900">{order.id}</div>
-                            <div className="text-sm text-gray-600">{order.clientName}</div>
-                        </div>
-                        <div className="text-right">
-                            <span className={`px-2 py-1 text-xs rounded-full font-medium ${getStatusClass(order.status)}`}>
-                                {order.status}
-                            </span>
-                        </div>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-2 text-sm mb-3">
-                        <div>
-                            <span className="text-gray-500 text-xs">Price:</span>
-                            <div className="font-medium text-sm">{formatCurrency(order.price, order.currency)}</div>
-                        </div>
-                        <div>
-                            <span className="text-gray-500 text-xs">Due Amount:</span>
-                            <div className={`font-medium text-sm ${dueAmount > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                {formatCurrency(dueAmount, order.currency)}
-                            </div>
-                        </div>
-                        <div>
-                            <span className="text-gray-500 text-xs">Payment Status:</span>
-                            <div className="flex items-center">
-                                <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${getPaymentClass(order.paymentStatus)}`}>
-                                    {order.paymentStatus}
-                                </span>
-                            </div>
-                        </div>
-                        <div>
-                            <span className="text-gray-500 text-xs">Method:</span>
-                            <div className="font-medium text-sm text-gray-700">
-                                {paymentMethod ? (
-                                    <span className="flex items-center">
-                                        <i className="fas fa-wallet mr-1 text-xs text-gray-400"></i> {paymentMethod}
-                                    </span>
-                                ) : '-'}
-                            </div>
-                        </div>
-                        <div className="col-span-2 pt-2 border-t border-gray-100 mt-1">
-    <div className="flex justify-between items-center mb-2">
-        <span className="text-gray-500 text-xs font-medium">Assigned Team:</span>
-        <div className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded flex items-center">
-            Total Budget: {formatCurrency(totalTeamBudget, order.currency)}
-            <button onClick={() => onEditBudget(order)} className="ml-2 text-blue-800"><i className="fas fa-edit"></i></button>
-        </div>
-    </div>
-    
-    {/* Show Assigned Members */}
-    {assignedMembers.length > 0 ? (
-        <div className="space-y-1">
-            {assignedMembers.map(member => {
-                const teamMember = team.find(t => t.id === member.memberId);
-                return (
-                    <div key={member.memberId} className="flex justify-between items-center text-xs bg-gray-50 px-2 py-1 rounded">
-                        <span className="font-medium text-gray-700">
-                            <i className="fas fa-user-circle mr-1 text-blue-500"></i>
-                            {teamMember?.name || member.memberName}
-                        </span>
-                        <div className="flex items-center gap-2">
-                            <span className="text-blue-600 font-medium">
-                                {formatCurrency(member.budget || 0, order.currency)}
-                            </span>
-                            <span className={`px-1.5 py-0.5 rounded-full text-xs font-medium ${
-                                member.paymentStatus === 'Paid' ? 'bg-green-100 text-green-700' :
-                                member.paymentStatus === 'Partial' ? 'bg-yellow-100 text-yellow-700' :
-                                'bg-red-100 text-red-700'
-                            }`}>
-                                {member.paymentStatus}
-                            </span>
-                        </div>
-                    </div>
-                );
-            })}
-        </div>
-    ) : legacyEditor ? (
-        <div className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded">
-            <i className="fas fa-user-circle mr-1 text-blue-500"></i>
-            {legacyEditor.name} (Legacy)
-        </div>
-    ) : (
-        <div className="text-xs text-gray-400 italic">No team members assigned</div>
-    )}
-</div>
-                    </div>
-
-                    <div className="bg-gray-50 rounded-lg p-2 mb-3">
-                        <div className="flex justify-between text-xs text-gray-600 mb-1">
-                            <span>Paid: {formatCurrency(order.paidAmount || 0, order.currency)}</span>
-                            <span>{Math.min(((order.paidAmount || 0) / order.price) * 100, 100).toFixed(0)}%</span>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-2">
-                            <div 
-                                className={`h-2 rounded-full ${order.paymentStatus === 'Paid' ? 'bg-green-500' : order.paymentStatus === 'Partial' ? 'bg-yellow-500' : 'bg-gray-300'}`}
-                                style={{ width: `${Math.min(((order.paidAmount || 0) / order.price) * 100, 100)}%` }}
-                            ></div>
-                        </div>
-                    </div>
-                    
-                    <div className="flex justify-between items-center border-t pt-3">
-                        <select
-                            value={order.status}
-                            onChange={(e) => onStatusChange(order.id, e.target.value)}
-                            className={`text-xs border rounded-lg px-2 py-1.5 font-medium ${getStatusClass(order.status)}`}
-                        >
-                            <option value="Fresh">Fresh</option>
-                            <option value="Scripting">Scripting</option>
-                            <option value="Editing">Editing</option>
-                            <option value="Correction">Correction</option>
-                            <option value="Final Delivery">Final Delivery</option>
-                            <option value="Completed">Completed</option>
-                        </select>
-                        
-                        <div className="flex space-x-3">
-                            <button onClick={() => onWhatsApp(order.clientPhone)} className="text-green-600 text-lg p-1"><i className="fab fa-whatsapp"></i></button>
-                            <button onClick={() => onEdit(order)} className="text-blue-600 text-lg p-1"><i className="fas fa-edit"></i></button>
-                            <button onClick={() => onPayment(order)} className="text-purple-600 text-lg p-1"><i className="fas fa-money-bill-wave"></i></button>
-                            <button onClick={() => onDelete(order.id)} className="text-red-600 text-lg p-1"><i className="fas fa-trash"></i></button>
-                        </div>
+            <div className="flex justify-between items-start mb-3">
+                <div>
+                    <div className="font-bold text-gray-900">{order.id}</div>
+                    <div className="text-sm text-gray-600">{order.clientName}</div>
+                </div>
+                <div className="text-right">
+                    <span className={`px-2 py-1 text-xs rounded-full font-medium ${getStatusClass(order.status)}`}>
+                        {order.status}
+                    </span>
+                </div>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-2 text-sm mb-3">
+                <div>
+                    <span className="text-gray-500 text-xs">Price:</span>
+                    <div className="font-medium text-sm">{formatCurrency(order.price, order.currency)}</div>
+                </div>
+                <div>
+                    <span className="text-gray-500 text-xs">Due Amount:</span>
+                    <div className={`font-medium text-sm ${dueAmount > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {formatCurrency(dueAmount, order.currency)}
                     </div>
                 </div>
-            );
-        };
+                <div>
+                    <span className="text-gray-500 text-xs">Payment Status:</span>
+                    <div className="flex items-center">
+                        <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${getPaymentClass(order.paymentStatus)}`}>
+                            {order.paymentStatus}
+                        </span>
+                    </div>
+                </div>
+                <div>
+                    <span className="text-gray-500 text-xs">Method:</span>
+                    <div className="font-medium text-sm text-gray-700">
+                        {paymentMethod ? (
+                            <span className="flex items-center">
+                                <i className="fas fa-wallet mr-1 text-xs text-gray-400"></i> {paymentMethod}
+                            </span>
+                        ) : '-'}
+                    </div>
+                </div>
+                <div className="col-span-2 pt-2 border-t border-gray-100 mt-1">
+                    <div className="flex justify-between items-center mb-2">
+                        <span className="text-gray-500 text-xs font-medium">Assigned Team:</span>
+                        <div className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded flex items-center">
+                            Total Budget: {formatCurrency(totalTeamBudget, order.currency)}
+                            <button onClick={() => onEditBudget(order)} className="ml-2 text-blue-800"><i className="fas fa-edit"></i></button>
+                        </div>
+                    </div>
+                    
+                    {assignedMembers.length > 0 ? (
+                        <div className="space-y-1">
+                            {assignedMembers.map(member => {
+                                const teamMember = team.find(t => t.id === member.memberId);
+                                return (
+                                    <div key={member.memberId} className="flex justify-between items-center text-xs bg-gray-50 px-2 py-1 rounded">
+                                        <span className="font-medium text-gray-700">
+                                            <i className="fas fa-user-circle mr-1 text-blue-500"></i>
+                                            {teamMember?.name || member.memberName}
+                                        </span>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-blue-600 font-medium">
+                                                {formatCurrency(member.budget || 0, order.currency)}
+                                            </span>
+                                            <span className={`px-1.5 py-0.5 rounded-full text-xs font-medium ${
+                                                member.paymentStatus === 'Paid' ? 'bg-green-100 text-green-700' :
+                                                member.paymentStatus === 'Partial' ? 'bg-yellow-100 text-yellow-700' :
+                                                'bg-red-100 text-red-700'
+                                            }`}>
+                                                {member.paymentStatus}
+                                            </span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    ) : legacyEditor ? (
+                        <div className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded">
+                            <i className="fas fa-user-circle mr-1 text-blue-500"></i>
+                            {legacyEditor.name} (Legacy)
+                        </div>
+                    ) : (
+                        <div className="text-xs text-gray-400 italic">No team members assigned</div>
+                    )}
+                </div>
+            </div>
+
+            <div className="bg-gray-50 rounded-lg p-2 mb-3">
+                <div className="flex justify-between text-xs text-gray-600 mb-1">
+                    <span>Paid: {formatCurrency(order.paidAmount || 0, order.currency)}</span>
+                    <span>{Math.min(((order.paidAmount || 0) / order.price) * 100, 100).toFixed(0)}%</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                        className={`h-2 rounded-full ${order.paymentStatus === 'Paid' ? 'bg-green-500' : order.paymentStatus === 'Partial' ? 'bg-yellow-500' : 'bg-gray-300'}`}
+                        style={{ width: `${Math.min(((order.paidAmount || 0) / order.price) * 100, 100)}%` }}
+                    ></div>
+                </div>
+            </div>
+            
+            {/* Confirm Delivery Button - শুধু Completed এবং Unconfirmed orders এর জন্য */}
+            {!isConfirmed && order.status === 'Completed' && (
+                <button 
+                    onClick={() => onConfirmDelivery(order.id)}
+                    className="w-full mb-3 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 flex items-center justify-center"
+                >
+                    <i className="fas fa-check-circle mr-2"></i>
+                    Confirm Delivery & Add to Profit
+                </button>
+            )}
+            
+            <div className="flex justify-between items-center border-t pt-3">
+                <select
+                    value={order.status}
+                    onChange={(e) => onStatusChange(order.id, e.target.value)}
+                    className={`text-xs border rounded-lg px-2 py-1.5 font-medium ${getStatusClass(order.status)}`}
+                >
+                    <option value="Fresh">Fresh</option>
+                    <option value="Scripting">Scripting</option>
+                    <option value="Editing">Editing</option>
+                    <option value="Correction">Correction</option>
+                    <option value="Final Delivery">Final Delivery</option>
+                    <option value="Completed">Completed</option>
+                </select>
+                
+                <div className="flex space-x-3">
+                    <button onClick={() => onWhatsApp(order.clientPhone)} className="text-green-600 text-lg p-1"><i className="fab fa-whatsapp"></i></button>
+                    <button onClick={() => onEdit(order)} className="text-blue-600 text-lg p-1"><i className="fas fa-edit"></i></button>
+                    <button onClick={() => onPayment(order)} className="text-purple-600 text-lg p-1"><i className="fas fa-money-bill-wave"></i></button>
+                    <button onClick={() => onDelete(order.id)} className="text-red-600 text-lg p-1"><i className="fas fa-trash"></i></button>
+                </div>
+            </div>
+        </div>
+    );
+};
 
         // =============================================
         // MOBILE TEAM CARD COMPONENT
@@ -1222,17 +1313,18 @@
         };
 
         // =============================================
-        // MAIN DASHBOARD COMPONENT
-        // =============================================
+// MAIN DASHBOARD COMPONENT
+// =============================================
 
-        const Dashboard = () => {
-            // All State Variables
-            const [activeTab, setActiveTab] = React.useState('overview');
-            const [orders, setOrders] = React.useState([]);
-            const [team, setTeam] = React.useState([]);
-            const [contacts, setContacts] = React.useState([]);
-            const [announcements, setAnnouncements] = React.useState([]);
-            const [admins, setAdmins] = React.useState([]);
+const Dashboard = () => {
+    // All State Variables
+    const [activeTab, setActiveTab] = React.useState('overview');
+    const [orders, setOrders] = React.useState([]);
+    const [team, setTeam] = React.useState([]);
+    const [contacts, setContacts] = React.useState([]);
+    const [announcements, setAnnouncements] = React.useState([]);
+    const [admins, setAdmins] = React.useState([]);
+    const [showMobileMenu, setShowMobileMenu] = React.useState(false);
             const [filters, setFilters] = React.useState({
                 status: '',
                 editor: '',
@@ -1291,8 +1383,30 @@
             const [isSaving, setIsSaving] = React.useState(false);
 
             // Activity Log States (NEW)
-            const [activityLogs, setActivityLogs] = React.useState([]);
-            const [showActivityLogModal, setShowActivityLogModal] = React.useState(false);
+const [activityLogs, setActivityLogs] = React.useState([]);
+const [showActivityLogModal, setShowActivityLogModal] = React.useState(false);
+
+// ==================== REPORTS STATES ====================
+const [reportStartDate, setReportStartDate] = React.useState(new Date().toISOString().slice(0, 10));
+const [reportEndDate, setReportEndDate] = React.useState(new Date().toISOString().slice(0, 10));
+const [reportData, setReportData] = React.useState(null);
+const [isGeneratingReport, setIsGeneratingReport] = React.useState(false);
+
+// ==================== EXCHANGE RATE STATE ====================
+const [exchangeRate, setExchangeRate] = React.useState(() => {
+    const saved = LocalStorageService.get('motioncraft_exchange_rate');
+    return saved?.rate || CONFIG.DEFAULT_EXCHANGE_RATE;
+});
+const [rateLastUpdated, setRateLastUpdated] = React.useState(() => {
+    const saved = LocalStorageService.get('motioncraft_exchange_rate');
+    return saved?.lastUpdated || null;
+});
+
+// ==================== FINANCIALS STATES (NEW) ====================
+const [costs, setCosts] = React.useState([]);
+const [showCostModal, setShowCostModal] = React.useState(false);
+const [currentCost, setCurrentCost] = React.useState(null);
+const [currentTime, setCurrentTime] = React.useState(new Date());
 
                         // Show toast notification
             const showToast = (message, type = 'info') => {
@@ -1393,37 +1507,41 @@
                 let unsubscribeActivityLogs = null;
 
                 const loadData = async () => {
-                    // First load from localStorage (FAST)
-                    const cachedOrders = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.ORDERS);
-                    const cachedTeam = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.TEAM);
-                    const cachedContacts = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.CONTACTS);
-                    const cachedAnnouncements = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.ANNOUNCEMENTS);
-                    const cachedAdmins = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.ADMINS);
+    // First load from localStorage (FAST)
+    const cachedOrders = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.ORDERS);
+    const cachedTeam = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.TEAM);
+    const cachedContacts = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.CONTACTS);
+    const cachedAnnouncements = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.ANNOUNCEMENTS);
+    const cachedAdmins = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.ADMINS);
+    const cachedCosts = LocalStorageService.get(CONFIG.LOCAL_STORAGE_KEYS.COSTS);
 
-                    if (cachedOrders) setOrders(cachedOrders);
-                    if (cachedTeam) setTeam(cachedTeam);
-                    if (cachedContacts) setContacts(cachedContacts);
-                    if (cachedAnnouncements) setAnnouncements(cachedAnnouncements);
-                    if (cachedAdmins) setAdmins(cachedAdmins);
+    if (cachedOrders) setOrders(cachedOrders);
+    if (cachedTeam) setTeam(cachedTeam);
+    if (cachedContacts) setContacts(cachedContacts);
+    if (cachedAnnouncements) setAnnouncements(cachedAnnouncements);
+    if (cachedAdmins) setAdmins(cachedAdmins);
+    if (cachedCosts) setCosts(cachedCosts);
 
-                    setIsLoading(false);
-                    setSyncStatus('syncing');
-                    
-                    // Then sync from Firebase (background)
-                    try {
-                        const [ordersData, teamData, contactsData, announcementsData, adminsData] = await Promise.all([
-                            FirebaseService.getOrders(),
-                            FirebaseService.getTeam(),
-                            FirebaseService.getContacts(),
-                            FirebaseService.getAnnouncements(),
-                            FirebaseService.getAdmins()
-                        ]);
-                        
-                        setOrders(ordersData);
-                        setTeam(teamData);
-                        setContacts(contactsData);
-                        setAnnouncements(announcementsData);
-                        setAdmins(adminsData);
+    setIsLoading(false);
+    setSyncStatus('syncing');
+    
+    // Then sync from Firebase (background)
+    try {
+        const [ordersData, teamData, contactsData, announcementsData, adminsData, costsData] = await Promise.all([
+            FirebaseService.getOrders(),
+            FirebaseService.getTeam(),
+            FirebaseService.getContacts(),
+            FirebaseService.getAnnouncements(),
+            FirebaseService.getAdmins(),
+            FirebaseService.getCosts()
+        ]);
+
+        setOrders(ordersData);
+        setTeam(teamData);
+        setContacts(contactsData);
+        setAnnouncements(announcementsData);
+        setAdmins(adminsData);
+        setCosts(costsData);
                         
                         setSyncStatus('online');
                         LocalStorageService.set(CONFIG.LOCAL_STORAGE_KEYS.LAST_SYNC, Date.now());
@@ -1492,10 +1610,24 @@
                     });
 
                 // ========================================
-                // 🔄 REAL-TIME LISTENER: ADMINS
-                // ========================================
-                const unsubscribeAdmins = db.collection('admins')
-                    .onSnapshot((snapshot) => {
+// 🔄 REAL-TIME LISTENER: COSTS (NEW)
+// ========================================
+const unsubscribeCosts = db.collection('costs')
+    .orderBy('createdAt', 'desc')
+    .onSnapshot((snapshot) => {
+        const costsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setCosts(costsData);
+        LocalStorageService.set(CONFIG.LOCAL_STORAGE_KEYS.COSTS, costsData);
+        setSyncStatus('online');
+    }, (error) => {
+        console.error("Costs listener error:", error);
+    });
+
+// ========================================
+// 🔄 REAL-TIME LISTENER: ADMINS
+// ========================================
+const unsubscribeAdmins = db.collection('admins')
+    .onSnapshot((snapshot) => {
                         const adminsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                         setAdmins(adminsData);
                         LocalStorageService.set(CONFIG.LOCAL_STORAGE_KEYS.ADMINS, adminsData);
@@ -1542,11 +1674,12 @@
                 // 🧹 CLEANUP ON UNMOUNT
                 // ========================================
                 return () => {
-                    unsubscribeOrders();
-                    unsubscribeTeam();
-                    unsubscribeContacts();
-                    unsubscribeAnnouncements();
-                    unsubscribeAdmins();
+    unsubscribeOrders();
+    unsubscribeTeam();
+    unsubscribeContacts();
+    unsubscribeAnnouncements();
+    unsubscribeCosts();
+    unsubscribeAdmins();
                     if (unsubscribeActivityLogs) {
                         unsubscribeActivityLogs();
                     }
@@ -1555,46 +1688,103 @@
                 };
             }, [isAuthenticated]);
 
-            // Calculate financials
-            const financials = React.useMemo(() => {
-                const currentMonthOrders = orders.filter(order => 
-                    order.createdAt && order.createdAt.startsWith(selectedMonth)
-                );
+            // ==================== CALCULATE FINANCIALS (SMART BUSINESS LOGIC) ====================
+const financials = React.useMemo(() => {
+    // Get current date for 7-day filter
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    
+    // Filter orders
+    const activeOrders = orders.filter(order => {
+        if (!order || !order.createdAt) return false;
+        
+        const orderDate = new Date(order.createdAt);
+        const isConfirmed = order.isDeliveryConfirmed === true;
+        const isPending = !isConfirmed;
+        const isWithin7Days = orderDate >= sevenDaysAgo;
+        const isCurrentMonth = order.createdAt && order.createdAt.startsWith(selectedMonth);
+        
+        // Pending orders সব সময় দেখাবে
+        if (isPending) return true;
+        
+        // Confirmed orders শুধু current month এবং 7 দিনের মধ্যে হলে
+        return isConfirmed && isCurrentMonth && isWithin7Days;
+    });
+    
+    // Filter costs for current month
+    const activeCosts = (costs || []).filter(cost => {
+        if (!cost || !cost.createdAt) return false;
+        return cost.createdAt.startsWith(selectedMonth);
+    });
 
-                const totalIncome = currentMonthOrders
-                    .filter(order => order.paymentStatus === 'Paid' || order.paymentStatus === 'Partial')
-                    .reduce((sum, order) => {
-                        let amount = order.paidAmount || 0;
-                        if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
-                            amount = order.currency === 'USD' 
-                                ? order.paidAmount * CONFIG.EXCHANGE_RATE_BDT_PER_USD 
-                                : order.paidAmount / CONFIG.EXCHANGE_RATE_BDT_PER_USD;
-                        }
-                        return sum + amount;
-                    }, 0);
+    // ===== CONFIRMED INCOME =====
+const confirmedIncome = activeOrders
+    .filter(order => order.isDeliveryConfirmed === true)
+    .reduce((sum, order) => {
+        let amount = parseFloat(order.price) || 0;
+        if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
+            amount = order.currency === 'USD' 
+                ? amount * exchangeRate 
+                : amount / exchangeRate;
+        }
+        return sum + amount;
+    }, 0);
 
-                const pendingAmount = currentMonthOrders
-                    .filter(order => order.paymentStatus === 'Pending' || order.paymentStatus === 'Partial')
-                    .reduce((sum, order) => {
-                        let amount = (order.price || 0) - (order.paidAmount || 0);
-                        if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
-                            amount = order.currency === 'USD' 
-                                ? amount * CONFIG.EXCHANGE_RATE_BDT_PER_USD 
-                                : amount / CONFIG.EXCHANGE_RATE_BDT_PER_USD;
-                        }
-                        return sum + amount;
-                    }, 0);
+    // ===== PENDING INCOME =====
+const pendingIncome = activeOrders
+    .filter(order => order.isDeliveryConfirmed !== true)
+    .reduce((sum, order) => {
+        let amount = parseFloat(order.price) || 0;
+        if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
+            amount = order.currency === 'USD' 
+                ? amount * exchangeRate 
+                : amount / exchangeRate;
+        }
+        return sum + amount;
+    }, 0);
 
-                const totalExpenses = totalIncome * 0.3;
-                const netProfit = totalIncome - totalExpenses;
+   // ===== EXPENSES (Team Budget) =====
+const totalExpenses = activeOrders.reduce((sum, order) => {
+    const membersBudget = (order.assignedMembers || []).reduce((memberSum, member) => {
+        return memberSum + (parseFloat(member.budget) || 0);
+    }, 0);
+    const legacyBudget = parseFloat(order.teamBudget) || 0;
+    let budgetAmount = membersBudget > 0 ? membersBudget : legacyBudget;
+    
+    if (order.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
+        budgetAmount = order.currency === 'USD' 
+            ? budgetAmount * exchangeRate 
+            : budgetAmount / exchangeRate;
+    }
+    return sum + budgetAmount;
+}, 0);
 
-                return {
-                    totalIncome,
-                    totalExpenses,
-                    netProfit,
-                    pendingAmount
-                };
-            }, [orders, selectedMonth]);
+    // ===== MANUAL COSTS =====
+const totalCost = activeCosts.reduce((sum, cost) => {
+    let amount = parseFloat(cost.amount) || 0;
+    if (cost.currency !== CONFIG.DEFAULT_DISPLAY_CURRENCY) {
+        amount = cost.currency === 'USD' 
+            ? amount * exchangeRate 
+            : amount / exchangeRate;
+    }
+    return sum + amount;
+}, 0);
+
+    // ===== NET PROFIT =====
+    const netProfit = confirmedIncome - totalExpenses - totalCost;
+
+    // ===== PENDING ORDERS COUNT =====
+    const pendingOrdersCount = activeOrders.filter(order => order.isDeliveryConfirmed !== true).length;
+
+    return {
+        confirmedIncome: confirmedIncome || 0,
+        pendingIncome: pendingIncome || 0,
+        totalExpenses: totalExpenses || 0,
+        totalCost: totalCost || 0,
+        netProfit: netProfit || 0,
+        pendingOrdersCount: pendingOrdersCount || 0
+    };
+}, [orders, costs, selectedMonth, exchangeRate]);
 
             // Filter orders
             const filteredOrders = React.useMemo(() => {
@@ -1698,9 +1888,343 @@
     });
 }, [team, orders, selectedMonth]);
 
-            // Notification count
-            React.useEffect(() => {
-                const newOrdersCount = orders.filter(order => 
+          // ==================== LIVE CLOCK ====================
+React.useEffect(() => {
+    const timer = setInterval(() => {
+        setCurrentTime(new Date());
+    }, 1000);
+    
+    return () => clearInterval(timer);
+}, []);
+
+// ==================== REAL-TIME EXCHANGE RATE ====================
+const fetchExchangeRate = async () => {
+    try {
+        const response = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
+        const data = await response.json();
+        
+        if (data?.rates?.BDT) {
+            const newRate = parseFloat(data.rates.BDT.toFixed(2));
+            setExchangeRate(newRate);
+            setRateLastUpdated(new Date().toISOString());
+            LocalStorageService.set('motioncraft_exchange_rate', {
+                rate: newRate,
+                lastUpdated: new Date().toISOString()
+            });
+        }
+    } catch (error) {
+        console.error('Exchange rate fetch failed:', error);
+    }
+};
+
+React.useEffect(() => {
+    // Fetch on load if older than 1 hour
+    const saved = LocalStorageService.get('motioncraft_exchange_rate');
+    const oneHourAgo = Date.now() - (60 * 60 * 1000);
+    
+    if (!saved || new Date(saved.lastUpdated) < oneHourAgo) {
+        fetchExchangeRate();
+    }
+    
+    // Auto refresh every 1 hour
+    const interval = setInterval(fetchExchangeRate, 60 * 60 * 1000);
+    return () => clearInterval(interval);
+}, []);
+
+// =============================================
+// REPORT GENERATION FUNCTION
+// =============================================
+const generateReport = () => {
+    setIsGeneratingReport(true);
+    
+    try {
+        const startDate = new Date(reportStartDate);
+        const endDate = new Date(reportEndDate);
+        endDate.setHours(23, 59, 59, 999); // End of day
+        
+        // Filter orders within date range
+        const filteredOrders = orders.filter(order => {
+            if (!order.createdAt) return false;
+            const orderDate = new Date(order.createdAt);
+            return orderDate >= startDate && orderDate <= endDate;
+        });
+        
+        // Calculate summary stats
+        const totalOrders = filteredOrders.length;
+        const completedOrders = filteredOrders.filter(o => o.status === 'Completed').length;
+        const pendingOrders = filteredOrders.filter(o => o.status !== 'Completed').length;
+        const confirmedOrders = filteredOrders.filter(o => o.isDeliveryConfirmed).length;
+        
+        // Calculate financials
+        let totalRevenue = 0;
+        let totalTeamBudget = 0;
+        let totalPaid = 0;
+        let totalDue = 0;
+        
+        filteredOrders.forEach(order => {
+            let price = parseFloat(order.price) || 0;
+            let paid = parseFloat(order.paidAmount) || 0;
+            
+            // Convert to BDT if USD
+            if (order.currency === 'USD') {
+                price = price * exchangeRate;
+                paid = paid * exchangeRate;
+            }
+            
+            totalRevenue += price;
+            totalPaid += paid;
+            totalDue += (price - paid);
+            
+            // Team budget
+            const membersBudget = (order.assignedMembers || []).reduce((sum, m) => sum + (parseFloat(m.budget) || 0), 0);
+            const legacyBudget = parseFloat(order.teamBudget) || 0;
+            let budget = membersBudget > 0 ? membersBudget : legacyBudget;
+            if (order.currency === 'USD') budget = budget * exchangeRate;
+            totalTeamBudget += budget;
+        });
+        
+        // Get unique clients
+        const uniqueClients = [...new Set(filteredOrders.map(o => o.clientName))];
+        
+        // Team member stats
+        const teamStats = {};
+        filteredOrders.forEach(order => {
+            // New format
+            (order.assignedMembers || []).forEach(member => {
+                const teamMember = team.find(t => t.id === member.memberId);
+                const name = teamMember?.name || member.memberName || 'Unknown';
+                
+                if (!teamStats[name]) {
+                    teamStats[name] = { 
+                        name, 
+                        orders: 0, 
+                        budget: 0, 
+                        paid: 0,
+                        role: teamMember?.role || 'Team Member'
+                    };
+                }
+                teamStats[name].orders++;
+                let budget = parseFloat(member.budget) || 0;
+                let paid = parseFloat(member.paidAmount) || 0;
+                if (order.currency === 'USD') {
+                    budget = budget * exchangeRate;
+                    paid = paid * exchangeRate;
+                }
+                teamStats[name].budget += budget;
+                teamStats[name].paid += paid;
+            });
+            
+            // Legacy format
+            if (order.assignedEditor && !(order.assignedMembers || []).length) {
+                const teamMember = team.find(t => t.id === order.assignedEditor);
+                const name = teamMember?.name || 'Unknown';
+                
+                if (!teamStats[name]) {
+                    teamStats[name] = { 
+                        name, 
+                        orders: 0, 
+                        budget: 0, 
+                        paid: 0,
+                        role: teamMember?.role || 'Team Member'
+                    };
+                }
+                teamStats[name].orders++;
+                let budget = parseFloat(order.teamBudget) || 0;
+                let paid = parseFloat(order.teamPaidAmount) || 0;
+                if (order.currency === 'USD') {
+                    budget = budget * exchangeRate;
+                    paid = paid * exchangeRate;
+                }
+                teamStats[name].budget += budget;
+                teamStats[name].paid += paid;
+            }
+        });
+        
+        // Filter costs within date range
+        const filteredCosts = costs.filter(cost => {
+            if (!cost.createdAt) return false;
+            const costDate = new Date(cost.createdAt);
+            return costDate >= startDate && costDate <= endDate;
+        });
+        
+        let totalCosts = 0;
+        filteredCosts.forEach(cost => {
+            let amount = parseFloat(cost.amount) || 0;
+            if (cost.currency === 'USD') amount = amount * exchangeRate;
+            totalCosts += amount;
+        });
+        
+        // Net profit
+        const netProfit = totalRevenue - totalTeamBudget - totalCosts;
+        
+        setReportData({
+            dateRange: { start: reportStartDate, end: reportEndDate },
+            summary: {
+                totalOrders,
+                completedOrders,
+                pendingOrders,
+                confirmedOrders,
+                uniqueClients: uniqueClients.length
+            },
+            financials: {
+                totalRevenue,
+                totalTeamBudget,
+                totalCosts,
+                totalPaid,
+                totalDue,
+                netProfit
+            },
+            clients: uniqueClients,
+            teamStats: Object.values(teamStats),
+            orders: filteredOrders,
+            costs: filteredCosts
+        });
+        
+        showToast('Report generated successfully!', 'success');
+    } catch (error) {
+        console.error('Error generating report:', error);
+        showToast('Error generating report', 'error');
+    } finally {
+        setIsGeneratingReport(false);
+    }
+};
+
+// Print Report Function
+const printReport = () => {
+    if (!reportData) return;
+    
+    const printContent = `
+        <html>
+        <head>
+            <title>Motioncraft Report - ${reportData.dateRange.start} to ${reportData.dateRange.end}</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 20px; }
+                h1 { color: #1e40af; border-bottom: 2px solid #1e40af; padding-bottom: 10px; }
+                h2 { color: #374151; margin-top: 30px; }
+                .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin: 20px 0; }
+                .summary-box { background: #f3f4f6; padding: 15px; border-radius: 8px; text-align: center; }
+                .summary-box h3 { margin: 0; color: #6b7280; font-size: 12px; }
+                .summary-box p { margin: 5px 0 0; font-size: 24px; font-weight: bold; color: #111827; }
+                table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+                th, td { border: 1px solid #d1d5db; padding: 10px; text-align: left; }
+                th { background: #1e40af; color: white; }
+                tr:nth-child(even) { background: #f9fafb; }
+                .profit { color: #059669; }
+                .loss { color: #dc2626; }
+                .footer { margin-top: 40px; text-align: center; color: #6b7280; font-size: 12px; }
+            </style>
+        </head>
+        <body>
+            <h1>📊 Motioncraft Business Report</h1>
+            <p><strong>Period:</strong> ${new Date(reportData.dateRange.start).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })} - ${new Date(reportData.dateRange.end).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+            <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
+            
+            <h2>📈 Summary</h2>
+            <div class="summary-grid">
+                <div class="summary-box">
+                    <h3>Total Orders</h3>
+                    <p>${reportData.summary.totalOrders}</p>
+                </div>
+                <div class="summary-box">
+                    <h3>Completed</h3>
+                    <p>${reportData.summary.completedOrders}</p>
+                </div>
+                <div class="summary-box">
+                    <h3>Pending</h3>
+                    <p>${reportData.summary.pendingOrders}</p>
+                </div>
+                <div class="summary-box">
+                    <h3>Confirmed</h3>
+                    <p>${reportData.summary.confirmedOrders}</p>
+                </div>
+                <div class="summary-box">
+                    <h3>Unique Clients</h3>
+                    <p>${reportData.summary.uniqueClients}</p>
+                </div>
+                <div class="summary-box">
+                    <h3>Team Members</h3>
+                    <p>${reportData.teamStats.length}</p>
+                </div>
+            </div>
+            
+            <h2>💰 Financial Summary</h2>
+            <table>
+                <tr><td>Total Revenue</td><td><strong>৳${reportData.financials.totalRevenue.toLocaleString()}</strong></td></tr>
+                <tr><td>Total Paid</td><td>৳${reportData.financials.totalPaid.toLocaleString()}</td></tr>
+                <tr><td>Total Due</td><td style="color: #dc2626;">৳${reportData.financials.totalDue.toLocaleString()}</td></tr>
+                <tr><td>Team Budget</td><td>৳${reportData.financials.totalTeamBudget.toLocaleString()}</td></tr>
+                <tr><td>Other Costs</td><td>৳${reportData.financials.totalCosts.toLocaleString()}</td></tr>
+                <tr><td><strong>Net Profit</strong></td><td class="${reportData.financials.netProfit >= 0 ? 'profit' : 'loss'}"><strong>৳${reportData.financials.netProfit.toLocaleString()}</strong></td></tr>
+            </table>
+            
+            <h2>👥 Team Performance</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Role</th>
+                        <th>Orders</th>
+                        <th>Budget</th>
+                        <th>Paid</th>
+                        <th>Due</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${reportData.teamStats.map(member => `
+                        <tr>
+                            <td>${member.name}</td>
+                            <td>${member.role}</td>
+                            <td>${member.orders}</td>
+                            <td>৳${member.budget.toLocaleString()}</td>
+                            <td>৳${member.paid.toLocaleString()}</td>
+                            <td>৳${(member.budget - member.paid).toLocaleString()}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+            
+            <h2>📋 Orders List</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Order ID</th>
+                        <th>Client</th>
+                        <th>Service</th>
+                        <th>Price</th>
+                        <th>Status</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${reportData.orders.map(order => `
+                        <tr>
+                            <td>${order.id}</td>
+                            <td>${order.clientName}</td>
+                            <td>${order.serviceType}</td>
+                            <td>${order.currency === 'USD' ? '$' : '৳'}${order.price}</td>
+                            <td>${order.status}</td>
+                            <td>${order.createdAt}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+            
+            <div class="footer">
+                <p>Generated by Motioncraft Dashboard | ${new Date().getFullYear()}</p>
+            </div>
+        </body>
+        </html>
+    `;
+    
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(printContent);
+    printWindow.document.close();
+    printWindow.print();
+};
+
+// Notification count
+React.useEffect(() => {
+    const newOrdersCount = orders.filter(order => 
                     order.status === 'Fresh' && 
                     order.createdAt &&
                     new Date(order.createdAt) > new Date(Date.now() - 24 * 60 * 60 * 1000)
@@ -1864,7 +2388,7 @@
                     setIsSendingReset(false);
                 }
             };
-
+            
             // Logout handler
                         const handleLogout = async () => {
                 try {
@@ -2130,64 +2654,97 @@ const getTeamMemberAssignment = (order, memberId) => {
             };
 
                                     const handleSaveOrder = async () => {
-                if (isSaving) return;
-                
-                if (currentOrder.id && currentOrder.clientName && currentOrder.clientPhone) {
-                    setIsSaving(true);
-                    try {
-                        const existingOrder = orders.find(o => o.id === currentOrder.id);
-                        const isNew = !existingOrder;
-                        
-                        await FirebaseService.saveOrder(currentOrder);
-                        
-                        // Detailed Activity Log
-                        if (isNew) {
-                            await logActivity('ORDER_CREATED', 
-                                `Created new order ${currentOrder.id} for "${currentOrder.clientName}" - Service: ${currentOrder.serviceType}, Price: ${currentOrder.price} ${currentOrder.currency}`,
-                                { orderData: currentOrder }
-                            );
-                        } else {
-                            await logDetailedChange('ORDER_UPDATED', 'Order', currentOrder.id, existingOrder, currentOrder);
-                        }
-                        
-                        setShowOrderModal(false);
-                        setCurrentOrder(null);
-                        showToast('Order saved', 'success');
-                    } catch (error) {
-                        console.error("Error saving order:", error);
-                        showToast('Error saving order', 'error');
-                    } finally {
-                        setIsSaving(false);
-                    }
-                } else {
-                    showToast('Please fill all required fields', 'error');
-                }
-            };
+    if (isSaving) return;
+    
+    if (currentOrder.id && currentOrder.clientName && currentOrder.clientPhone) {
+        setIsSaving(true);
+        try {
+            const existingOrder = orders.find(o => o.id === currentOrder.id);
+            const isNew = !existingOrder;
+            
+            await FirebaseService.saveOrder(currentOrder);
+            
+            // Detailed Activity Log
+            if (isNew) {
+                await logActivity('ORDER_CREATED', 
+                    `Created new order ${currentOrder.id} for "${currentOrder.clientName}" - Service: ${currentOrder.serviceType}, Price: ${currentOrder.price} ${currentOrder.currency}`,
+                    { orderData: currentOrder }
+                );
+            } else {
+                await logDetailedChange('ORDER_UPDATED', 'Order', currentOrder.id, existingOrder, currentOrder);
+            }
+            
+            setShowOrderModal(false);
+            setCurrentOrder(null);
+            showToast('Order saved', 'success');
+        } catch (error) {
+            console.error("Error saving order:", error);
+            showToast('Error saving order', 'error');
+        } finally {
+            setIsSaving(false);
+        }
+    } else {
+        showToast('Please fill all required fields', 'error');
+    }
+};
 
-                         const handleDeleteOrder = async (orderId) => {
-                if (isSaving) return;
-                
-                if (confirm('Are you sure you want to delete this order?')) {
-                    setIsSaving(true);
-                    try {
-                        const orderToDelete = orders.find(o => o.id === orderId);
-                        await FirebaseService.deleteOrder(orderId);
-                        
-                        // Log activity
-                        await logActivity('ORDER_DELETED', `Deleted order ${orderId} (${orderToDelete?.clientName || 'Unknown'})`);
-                        
-                        showToast('Order deleted', 'success');
-                    } catch (error) {
-                        console.error("Error deleting order:", error);
-                        showToast('Error deleting order', 'error');
-                    } finally {
-                        setIsSaving(false);
-                    }
-                }
-            };
+const handleDeleteOrder = async (orderId) => {
+    if (isSaving) return;
+    
+    if (confirm('Are you sure you want to delete this order?')) {
+        setIsSaving(true);
+        try {
+            const orderToDelete = orders.find(o => o.id === orderId);
+            await FirebaseService.deleteOrder(orderId);
+            
+            // Log activity
+            await logActivity('ORDER_DELETED', `Deleted order ${orderId} (${orderToDelete?.clientName || 'Unknown'})`);
+            
+            showToast('Order deleted', 'success');
+        } catch (error) {
+            console.error("Error deleting order:", error);
+            showToast('Error deleting order', 'error');
+        } finally {
+            setIsSaving(false);
+        }
+    }
+};
 
-            // Contact handlers
-            const handleCreateContact = () => {
+// Confirm Delivery Handler - Order কে profit এ যোগ করে
+const handleConfirmDelivery = async (orderId) => {
+    if (isSaving) return;
+    
+    if (confirm('Are you sure you want to confirm delivery?\n\nThis will add this order to your profit calculation.')) {
+        setIsSaving(true);
+        try {
+            const orderToUpdate = orders.find(o => o.id === orderId);
+            if (orderToUpdate) {
+                const updatedOrder = { 
+                    ...orderToUpdate, 
+                    isDeliveryConfirmed: true,
+                    deliveryConfirmedAt: new Date().toISOString()
+                };
+                await FirebaseService.saveOrder(updatedOrder);
+                
+                // Log activity
+                await logActivity('DELIVERY_CONFIRMED', 
+                    `Confirmed delivery for order ${orderId} (${orderToUpdate.clientName}) - ${formatCurrency(orderToUpdate.price, orderToUpdate.currency)} added to profit`,
+                    { orderId, clientName: orderToUpdate.clientName, amount: orderToUpdate.price, currency: orderToUpdate.currency }
+                );
+                
+                showToast('Delivery confirmed! Added to profit.', 'success');
+            }
+        } catch (error) {
+            console.error("Error confirming delivery:", error);
+            showToast('Error confirming delivery', 'error');
+        } finally {
+            setIsSaving(false);
+        }
+    }
+};
+
+// Contact handlers
+const handleCreateContact = () => {
                 setCurrentContact({
                     id: '',
                     name: '',
@@ -2827,8 +3384,65 @@ const getTeamMemberAssignment = (order, memberId) => {
                 }
             };
 
-            // Bulk actions
-            const toggleOrderSelection = (orderId) => {
+            // ==================== COST HANDLERS (NEW) ====================
+const handleCreateCost = () => {
+    setCurrentCost({
+        id: '',
+        title: '',
+        amount: 0,
+        currency: CONFIG.DEFAULT_DISPLAY_CURRENCY,
+        category: 'General',
+        note: '',
+        createdAt: new Date().toISOString().slice(0, 10)
+    });
+    setShowCostModal(true);
+};
+
+const handleEditCost = (cost) => {
+    setCurrentCost({...cost});
+    setShowCostModal(true);
+};
+
+const handleSaveCost = async () => {
+    if (isSaving) return;
+    
+    if (currentCost.title && currentCost.amount > 0) {
+        setIsSaving(true);
+        try {
+            await FirebaseService.saveCost(currentCost);
+            setShowCostModal(false);
+            setCurrentCost(null);
+            showToast('Cost saved successfully', 'success');
+        } catch (error) {
+            console.error("Error saving cost:", error);
+            showToast('Error saving cost', 'error');
+        } finally {
+            setIsSaving(false);
+        }
+    } else {
+        showToast('Please fill title and amount', 'error');
+    }
+};
+
+const handleDeleteCost = async (costId) => {
+    if (isSaving) return;
+    
+    if (confirm('Are you sure you want to delete this cost?')) {
+        setIsSaving(true);
+        try {
+            await FirebaseService.deleteCost(costId);
+            showToast('Cost deleted', 'success');
+        } catch (error) {
+            console.error("Error deleting cost:", error);
+            showToast('Error deleting cost', 'error');
+        } finally {
+            setIsSaving(false);
+        }
+    }
+};
+
+// Bulk actions
+const toggleOrderSelection = (orderId) => {
                 setSelectedOrders(prev => 
                     prev.includes(orderId) 
                         ? prev.filter(id => id !== orderId)
@@ -3341,34 +3955,37 @@ const getTeamMemberAssignment = (order, memberId) => {
                     </header>
 
                     {/* ==================== DESKTOP NAVIGATION ==================== */}
-                    <nav className="bg-white border-b border-gray-200 desktop-nav">
-                        <div className="w-full max-w-full px-3 sm:px-4 lg:px-6 xl:px-8">
-                            <div className="flex overflow-x-auto hide-scrollbar">
-                                <button onClick={() => setActiveTab('overview')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'overview' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-                                    <i className="fas fa-chart-pie mr-2"></i>Overview
-                                </button>
-                                <button onClick={() => setActiveTab('orders')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'orders' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-                                    <i className="fas fa-clipboard-list mr-2"></i>Orders
-                                    {notificationCount > 0 && <span className="ml-1 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">{notificationCount}</span>}
-                                </button>
-                                <button onClick={() => setActiveTab('team')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'team' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-                                    <i className="fas fa-users mr-2"></i>Team
-                                </button>
-                                <button onClick={() => setActiveTab('financials')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'financials' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-                                    <i className="fas fa-chart-line mr-2"></i>Financials
-                                </button>
-                                <button onClick={() => setActiveTab('announcements')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'announcements' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-                                    <i className="fas fa-bullhorn mr-2"></i>Announcements
-                                </button>
-                                <button onClick={() => setActiveTab('contacts')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'contacts' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-                                    <i className="fas fa-address-book mr-2"></i>Contacts
-                                </button>
-                                <button onClick={() => setActiveTab('settings')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'settings' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-                                    <i className="fas fa-cog mr-2"></i>Settings
-                                </button>
-                            </div>
-                        </div>
-                    </nav>
+<nav className="bg-white border-b border-gray-200 desktop-nav">
+    <div className="w-full max-w-full px-3 sm:px-4 lg:px-6 xl:px-8">
+        <div className="flex overflow-x-auto hide-scrollbar">
+            <button onClick={() => setActiveTab('overview')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'overview' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                <i className="fas fa-chart-pie mr-2"></i>Overview
+            </button>
+            <button onClick={() => setActiveTab('orders')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'orders' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                <i className="fas fa-clipboard-list mr-2"></i>Orders
+                {notificationCount > 0 && <span className="ml-1 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">{notificationCount}</span>}
+            </button>
+            <button onClick={() => setActiveTab('team')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'team' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                <i className="fas fa-users mr-2"></i>Team
+            </button>
+            <button onClick={() => setActiveTab('financials')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'financials' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                <i className="fas fa-chart-line mr-2"></i>Financials
+            </button>
+            <button onClick={() => setActiveTab('reports')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'reports' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                <i className="fas fa-file-alt mr-2"></i>Reports
+            </button>
+            <button onClick={() => setActiveTab('announcements')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'announcements' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                <i className="fas fa-bullhorn mr-2"></i>Announcements
+            </button>
+            <button onClick={() => setActiveTab('contacts')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'contacts' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                <i className="fas fa-address-book mr-2"></i>Contacts
+            </button>
+            <button onClick={() => setActiveTab('settings')} className={`px-4 py-3 font-medium text-sm border-b-2 whitespace-nowrap ${activeTab === 'settings' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                <i className="fas fa-cog mr-2"></i>Settings
+            </button>
+        </div>
+    </div>
+</nav>
 
                     {/* ==================== MAIN CONTENT ==================== */}
                     <main className="w-full max-w-full px-3 sm:px-4 lg:px-6 xl:px-8 py-4 md:py-8 main-content">
@@ -3406,27 +4023,27 @@ const getTeamMemberAssignment = (order, memberId) => {
                                         </div>
                                     </div>
                                     <div className="bg-white rounded-xl shadow-card p-4 md:p-6">
-                                        <div className="flex items-center">
-                                            <div className="p-2 md:p-3 rounded-lg bg-yellow-100 text-yellow-600">
-                                                <i className="fas fa-clock text-lg md:text-xl"></i>
-                                            </div>
-                                            <div className="ml-3 md:ml-4">
-                                                <p className="text-xs md:text-sm font-medium text-gray-600">Pending</p>
-                                                <p className="text-sm md:text-xl font-bold text-gray-900">{formatCurrency(financials.pendingAmount, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="bg-white rounded-xl shadow-card p-4 md:p-6">
-                                        <div className="flex items-center">
-                                            <div className="p-2 md:p-3 rounded-lg bg-purple-100 text-purple-600">
-                                                <i className="fas fa-chart-line text-lg md:text-xl"></i>
-                                            </div>
-                                            <div className="ml-3 md:ml-4">
-                                                <p className="text-xs md:text-sm font-medium text-gray-600">Income</p>
-                                                <p className="text-sm md:text-xl font-bold text-gray-900">{formatCurrency(financials.totalIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
-                                            </div>
-                                        </div>
-                                    </div>
+    <div className="flex items-center">
+        <div className="p-2 md:p-3 rounded-lg bg-yellow-100 text-yellow-600">
+            <i className="fas fa-clock text-lg md:text-xl"></i>
+        </div>
+        <div className="ml-3 md:ml-4">
+            <p className="text-xs md:text-sm font-medium text-gray-600">Pending</p>
+            <p className="text-sm md:text-xl font-bold text-gray-900">{formatCurrency(financials.pendingIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
+        </div>
+    </div>
+</div>
+<div className="bg-white rounded-xl shadow-card p-4 md:p-6">
+    <div className="flex items-center">
+        <div className="p-2 md:p-3 rounded-lg bg-purple-100 text-purple-600">
+            <i className="fas fa-chart-line text-lg md:text-xl"></i>
+        </div>
+        <div className="ml-3 md:ml-4">
+            <p className="text-xs md:text-sm font-medium text-gray-600">Confirmed</p>
+            <p className="text-sm md:text-xl font-bold text-gray-900">{formatCurrency(financials.confirmedIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
+        </div>
+    </div>
+</div>
                                 </div>
 
                                 {/* Recent Orders & Team Workload */}
@@ -3445,7 +4062,7 @@ const getTeamMemberAssignment = (order, memberId) => {
                                                 </div>
                                             ) : (
                                                 orders.slice(0, 5).map(order => (
-    <div key={order.id} className={`flex items-center justify-between py-2 border-b border-gray-100 ${isOverdue(order.dueDate) && order.status !== 'Completed' ? 'overdue' : ''}`}>
+    <div key={order.id} className={`flex items-center justify-between py-2 border-b border-gray-100 ${isOverdue(order.dueDate, order.status) ? 'overdue' : ''}`}>
                                                         <div>
                                                             <p className="font-medium text-gray-900 text-sm md:text-base">{order.id}</p>
                                                             <p className="text-xs md:text-sm text-gray-500">{order.clientName}</p>
@@ -3594,124 +4211,148 @@ const getTeamMemberAssignment = (order, memberId) => {
                                 )}
 
                                 {/* Mobile Order Cards */}
-                                <div className="lg:hidden">
-                                    {filteredOrders.length === 0 ? (
-                                        <div className="bg-white rounded-xl shadow-card p-8 text-center">
-                                            <i className="fas fa-inbox text-4xl text-gray-300 mb-4"></i>
-                                            <p className="text-gray-500">No orders found</p>
-                                        </div>
-                                    ) : (
-                                        filteredOrders.map(order => (
-                                            <MobileOrderCard
-                                                key={order.id}
-                                                order={order}
-                                                team={team}
-                                                onEdit={handleEditOrder}
-                                                onPayment={handleAddPayment}
-                                                onDelete={handleDeleteOrder}
-                                                onStatusChange={updateOrderStatus}
-                                                onWhatsApp={openWhatsApp}
-                                                onEditBudget={handleEditTeamBudget}
-                                            />
-                                        ))
-                                    )}
-                                </div>
+<div className="lg:hidden">
+    {filteredOrders.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-card p-8 text-center">
+            <i className="fas fa-inbox text-4xl text-gray-300 mb-4"></i>
+            <p className="text-gray-500">No orders found</p>
+        </div>
+    ) : (
+        filteredOrders.map(order => (
+            <MobileOrderCard
+                key={order.id}
+                order={order}
+                team={team}
+                onEdit={handleEditOrder}
+                onPayment={handleAddPayment}
+                onDelete={handleDeleteOrder}
+                onStatusChange={updateOrderStatus}
+                onWhatsApp={openWhatsApp}
+                onEditBudget={handleEditTeamBudget}
+                onConfirmDelivery={handleConfirmDelivery}
+            />
+        ))
+    )}
+</div>
 
                                 {/* Desktop Orders Table */}
-                                <div className="hidden lg:block bg-white rounded-xl shadow-card overflow-hidden">
-                                    <div className="overflow-x-auto">
-                                        <table className="min-w-full divide-y divide-gray-200">
-                                            <thead className="bg-gray-50">
-                                                <tr>
-                                                    <th className="px-4 py-3 text-left w-10"><input type="checkbox" className="rounded border-gray-300 text-blue-600" checked={selectedOrders.length === filteredOrders.length && filteredOrders.length > 0} onChange={(e) => e.target.checked ? setSelectedOrders(filteredOrders.map(o => o.id)) : setSelectedOrders([])}/></th>
-                                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Order Info</th>
-                                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Service</th>
-                                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Financials</th>
-                                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Assigned</th>
-                                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payment</th>
-                                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Method</th>
-                                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="bg-white divide-y divide-gray-200">
-                                                {filteredOrders.length === 0 ? (
-                                                    <tr><td colSpan="9" className="px-6 py-12 text-center text-gray-500">No orders found</td></tr>
-                                                ) : (
-                                                    filteredOrders.map(order => {
-                                                        const teamMember = getTeamMemberById(order.assignedEditor, team);
-                                                        const lastPayment = order.paymentHistory?.slice(-1)[0];
-                                                        return (
-                                                            <tr key={order.id} className={`hover:bg-gray-50 ${order.status === 'Fresh' ? 'new-order' : ''}`}>
-                                                                <td className="px-4 py-4"><input type="checkbox" className="rounded border-gray-300 text-blue-600" checked={selectedOrders.includes(order.id)} onChange={() => toggleOrderSelection(order.id)}/></td>
-                                                                <td className="px-4 py-4 whitespace-nowrap">
-                                                                    <div className="text-sm font-bold text-gray-900">{order.id}</div>
-                                                                    <div className="text-xs text-gray-500">{order.clientName}</div>
-                                                                </td>
-                                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">{order.serviceType}</td>
-                                                                <td className="px-4 py-4 whitespace-nowrap">
-    <div className="text-sm font-bold text-gray-900">{formatCurrency(order.price, order.currency)}</div>
-    <div className="text-xs text-blue-600 cursor-pointer" onClick={() => handleEditTeamBudget(order)}>
-        Team Total: {formatCurrency(calculateTotalTeamBudget(order), order.currency)} <i className="fas fa-edit"></i>
-    </div>
-</td>
-                                                                <td className="px-4 py-4 whitespace-nowrap">
-    <div className="space-y-1">
-        {(order.assignedMembers || []).length > 0 ? (
-            (order.assignedMembers || []).map(member => {
-                const teamMember = team.find(t => t.id === member.memberId);
-                return (
-                    <div key={member.memberId} className="flex items-center justify-between text-xs bg-blue-50 px-2 py-1 rounded">
-                        <span className="font-medium text-gray-700">{teamMember?.name || member.memberName}</span>
-                        <span className="text-blue-600 font-bold">{formatCurrency(member.budget || 0, order.currency)}</span>
-                    </div>
-                );
-            })
-        ) : order.assignedEditor ? (
-            <div className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded">
-                {getTeamMemberById(order.assignedEditor, team).name} (Legacy)
-            </div>
-        ) : (
-            <div className="text-xs text-gray-400 italic">Not assigned</div>
-        )}
-        <button 
-            onClick={() => handleEditOrder(order)} 
-            className="text-xs text-blue-600 hover:text-blue-800 font-medium mt-1"
-        >
-            <i className="fas fa-plus-circle mr-1"></i>Manage Team
-        </button>
-    </div>
-</td>
-                                                                <td className="px-4 py-4 whitespace-nowrap">
-                                                                    <select value={order.status} onChange={(e) => updateOrderStatus(order.id, e.target.value)} className={`text-xs rounded-full px-2 py-1 font-medium ${getStatusClass(order.status)} border-0`}>
-                                                                        <option value="Fresh">Fresh</option>
-                                                                        <option value="Scripting">Scripting</option>
-                                                                        <option value="Editing">Editing</option>
-                                                                        <option value="Correction">Correction</option>
-                                                                        <option value="Final Delivery">Final Delivery</option>
-                                                                        <option value="Completed">Completed</option>
-                                                                    </select>
-                                                                </td>
-                                                                <td className="px-4 py-4 whitespace-nowrap">
-                                                                    <span className={`inline-block px-2 py-1 text-xs rounded-full ${getPaymentClass(order.paymentStatus)}`}>{order.paymentStatus}</span>
-                                                                    <div className="text-xs text-gray-500 mt-1">Paid: {formatCurrency(order.paidAmount || 0, order.currency)}</div>
-                                                                </td>
-                                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-600">
-                                                                    {lastPayment ? lastPayment.method : '-'}
-                                                                </td>
-                                                                <td className="px-4 py-4 whitespace-nowrap">
-                                                                    <div className="flex space-x-2">
-                                                                        <button onClick={() => openWhatsApp(order.clientPhone)} className="text-green-600"><i className="fab fa-whatsapp"></i></button>
-                                                                        <button onClick={() => handleEditOrder(order)} className="text-blue-600"><i className="fas fa-edit"></i></button>
-                                                                        <button onClick={() => handleAddPayment(order)} className="text-purple-600"><i className="fas fa-money-bill-wave"></i></button>
-                                                                        <button onClick={() => handleDeleteOrder(order.id)} className="text-red-600"><i className="fas fa-trash"></i></button>
-                                                                    </div>
-                                                                </td>
-                                                            </tr>
-                                                        );
-                                                    })
-                                                )}
-                                            </tbody>
+<div className="hidden lg:block bg-white rounded-xl shadow-card overflow-hidden">
+    <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+                <tr>
+                    <th className="px-4 py-3 text-left w-10"><input type="checkbox" className="rounded border-gray-300 text-blue-600" checked={selectedOrders.length === filteredOrders.length && filteredOrders.length > 0} onChange={(e) => e.target.checked ? setSelectedOrders(filteredOrders.map(o => o.id)) : setSelectedOrders([])}/></th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Order Info</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Service</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Financials</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Assigned</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payment</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Method</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+                {filteredOrders.length === 0 ? (
+                    <tr><td colSpan="9" className="px-6 py-12 text-center text-gray-500">No orders found</td></tr>
+                ) : (
+                    filteredOrders.map(order => {
+                        const teamMember = getTeamMemberById(order.assignedEditor, team);
+                        const lastPayment = order.paymentHistory?.slice(-1)[0];
+                        const isConfirmed = order.isDeliveryConfirmed === true;
+                        return (
+                            <tr key={order.id} className={`hover:bg-gray-50 ${order.status === 'Fresh' ? 'new-order' : ''} ${isConfirmed ? 'bg-green-50' : ''}`}>
+                                <td className="px-4 py-4"><input type="checkbox" className="rounded border-gray-300 text-blue-600" checked={selectedOrders.includes(order.id)} onChange={() => toggleOrderSelection(order.id)}/></td>
+                                <td className="px-4 py-4 whitespace-nowrap">
+                                    <div className="flex items-center">
+                                        {isConfirmed && (
+                                            <span className="w-2 h-2 bg-green-500 rounded-full mr-2" title="Delivery Confirmed"></span>
+                                        )}
+                                        <div>
+                                            <div className="text-sm font-bold text-gray-900">{order.id}</div>
+                                            <div className="text-xs text-gray-500">{order.clientName}</div>
+                                            {isConfirmed && (
+                                                <span className="text-xs text-green-600 font-medium">
+                                                    <i className="fas fa-check-circle mr-1"></i>Confirmed
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </td>
+                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">{order.serviceType}</td>
+                                <td className="px-4 py-4 whitespace-nowrap">
+                                    <div className="text-sm font-bold text-gray-900">{formatCurrency(order.price, order.currency)}</div>
+                                    <div className="text-xs text-blue-600 cursor-pointer" onClick={() => handleEditTeamBudget(order)}>
+                                        Team Total: {formatCurrency(calculateTotalTeamBudget(order), order.currency)} <i className="fas fa-edit"></i>
+                                    </div>
+                                </td>
+                                <td className="px-4 py-4 whitespace-nowrap">
+                                    <div className="space-y-1">
+                                        {(order.assignedMembers || []).length > 0 ? (
+                                            (order.assignedMembers || []).map(member => {
+                                                const teamMember = team.find(t => t.id === member.memberId);
+                                                return (
+                                                    <div key={member.memberId} className="flex items-center justify-between text-xs bg-blue-50 px-2 py-1 rounded">
+                                                        <span className="font-medium text-gray-700">{teamMember?.name || member.memberName}</span>
+                                                        <span className="text-blue-600 font-bold">{formatCurrency(member.budget || 0, order.currency)}</span>
+                                                    </div>
+                                                );
+                                            })
+                                        ) : order.assignedEditor ? (
+                                            <div className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded">
+                                                {getTeamMemberById(order.assignedEditor, team).name} (Legacy)
+                                            </div>
+                                        ) : (
+                                            <div className="text-xs text-gray-400 italic">Not assigned</div>
+                                        )}
+                                        <button 
+                                            onClick={() => handleEditOrder(order)} 
+                                            className="text-xs text-blue-600 hover:text-blue-800 font-medium mt-1"
+                                        >
+                                            <i className="fas fa-plus-circle mr-1"></i>Manage Team
+                                        </button>
+                                    </div>
+                                </td>
+                                <td className="px-4 py-4 whitespace-nowrap">
+                                    <select value={order.status} onChange={(e) => updateOrderStatus(order.id, e.target.value)} className={`text-xs rounded-full px-2 py-1 font-medium ${getStatusClass(order.status)} border-0`}>
+                                        <option value="Fresh">Fresh</option>
+                                        <option value="Scripting">Scripting</option>
+                                        <option value="Editing">Editing</option>
+                                        <option value="Correction">Correction</option>
+                                        <option value="Final Delivery">Final Delivery</option>
+                                        <option value="Completed">Completed</option>
+                                    </select>
+                                </td>
+                                <td className="px-4 py-4 whitespace-nowrap">
+                                    <span className={`inline-block px-2 py-1 text-xs rounded-full ${getPaymentClass(order.paymentStatus)}`}>{order.paymentStatus}</span>
+                                    <div className="text-xs text-gray-500 mt-1">Paid: {formatCurrency(order.paidAmount || 0, order.currency)}</div>
+                                </td>
+                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-600">
+                                    {lastPayment ? lastPayment.method : '-'}
+                                </td>
+                                <td className="px-4 py-4 whitespace-nowrap">
+                                    <div className="flex items-center space-x-2">
+                                        {/* Confirm Delivery Button - Desktop */}
+                                        {!isConfirmed && order.status === 'Completed' && (
+                                            <button 
+                                                onClick={() => handleConfirmDelivery(order.id)} 
+                                                className="text-green-600 bg-green-100 px-2 py-1 rounded text-xs font-medium hover:bg-green-200"
+                                                title="Confirm Delivery"
+                                            >
+                                                <i className="fas fa-check-circle mr-1"></i>Confirm
+                                            </button>
+                                        )}
+                                        <button onClick={() => openWhatsApp(order.clientPhone)} className="text-green-600 hover:text-green-800"><i className="fab fa-whatsapp"></i></button>
+                                        <button onClick={() => handleEditOrder(order)} className="text-blue-600 hover:text-blue-800"><i className="fas fa-edit"></i></button>
+                                        <button onClick={() => handleAddPayment(order)} className="text-purple-600 hover:text-purple-800"><i className="fas fa-money-bill-wave"></i></button>
+                                        <button onClick={() => handleDeleteOrder(order.id)} className="text-red-600 hover:text-red-800"><i className="fas fa-trash"></i></button>
+                                    </div>
+                                </td>
+                            </tr>
+                        );
+                    })
+                )}
+            </tbody>
                                         </table>
                                     </div>
                                 </div>
@@ -3881,118 +4522,324 @@ const getTeamMemberAssignment = (order, memberId) => {
                         >
                             <i className="fas fa-hand-holding-usd mr-2"></i> Pay
                         </button>
-                    </td>
-                </tr>
-            );
-        });
-    })()}
-</tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            </div>
+                        </td>
+                        </tr>
+                        );
+                        });
+                        })()}
+                        </tbody>
+                        </table>
+                        </div>
+                        </div>
+                        </div>
                         )}
 
-                        {/* Financials Tab */}
-                        {activeTab === 'financials' && (
-                            <div className="w-full">
-                                <div className="mb-4 md:mb-8">
-                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                                        <div>
-                                            <h2 className="text-xl md:text-2xl font-bold text-gray-900">Financial Overview</h2>
-                                            <p className="text-sm md:text-base text-gray-600">Track income, expenses, and profits</p>
-                                        </div>
-                                        <div>
-                                            <input
-                                                type="month"
-                                                value={selectedMonth}
-                                                onChange={(e) => setSelectedMonth(e.target.value)}
-                                                className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                                            />
-                                        </div>
-                                    </div>
-                                </div>
+                        {/* ==================== FINANCIALS TAB ==================== */}
+{activeTab === 'financials' && (
+    <div className="w-full">
+        {/* ========== BEAUTIFUL COMPACT HEADER ========== */}
+        <div className="bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-500 rounded-xl shadow-lg mb-4 overflow-hidden">
+            {/* Main Header Row */}
+            <div className="p-3 md:p-4">
+                <div className="flex items-center justify-between">
+                    {/* Left Side - Clock & Date */}
+                    <div className="flex items-center gap-3">
+                        {/* Clock Icon with Pulse */}
+                        <div className="w-10 h-10 md:w-12 md:h-12 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-sm">
+                            <i className="fas fa-clock text-white text-lg md:text-xl"></i>
+                        </div>
+                        
+                        {/* Time & Date */}
+                        <div>
+                            <div className="text-lg md:text-xl font-bold text-white font-mono tracking-wide">
+                                {currentTime.toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute: '2-digit' })}
+                            </div>
+                            <div className="text-xs text-white/80">
+                                {currentTime.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {/* Right Side - Month Selector */}
+                    <div className="flex flex-col items-end gap-1">
+                        <input
+                            type="month"
+                            value={selectedMonth}
+                            onChange={(e) => setSelectedMonth(e.target.value)}
+                            className="px-2 py-1.5 text-xs md:text-sm bg-white/20 border border-white/30 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-white/50 backdrop-blur-sm"
+                        />
+                        <span className="text-xs text-white/70 hidden md:block">
+                            <i className="fas fa-calendar-check mr-1"></i>
+                            Select Month
+                        </span>
+                    </div>
+                </div>
+            </div>
+            
+            {/* Bottom Info Bar */}
+            <div className="bg-black/20 px-3 md:px-4 py-2 flex items-center justify-center gap-2">
+                <div className="flex items-center gap-1.5 text-white/90 text-xs md:text-sm">
+                    <i className="fas fa-sync-alt"></i>
+                    <span className="font-medium">Auto-refresh:</span>
+                </div>
+                <span className="text-yellow-300 text-xs md:text-sm font-medium">
+                    Data resets every 7 days
+                </span>
+                <span className="text-white/70 text-xs hidden sm:inline">
+                    (Pending orders excluded)
+                </span>
+            </div>
+        </div>
 
-                                {/* Financial Summary Cards */}
-                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6 mb-6 md:mb-8">
-                                    <div className="bg-white rounded-xl shadow-card p-4 md:p-6">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-xs md:text-sm font-medium text-gray-600">Total Income</p>
-                                                <p className="text-lg md:text-2xl font-bold text-green-600">{formatCurrency(financials.totalIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
-                                            </div>
-                                            <div className="p-2 md:p-3 rounded-lg bg-green-100 text-green-600">
-                                                <i className="fas fa-arrow-up text-lg md:text-xl"></i>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="bg-white rounded-xl shadow-card p-4 md:p-6">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-xs md:text-sm font-medium text-gray-600">Expenses</p>
-                                                <p className="text-lg md:text-2xl font-bold text-red-600">{formatCurrency(financials.totalExpenses, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
-                                            </div>
-                                            <div className="p-2 md:p-3 rounded-lg bg-red-100 text-red-600">
-                                                <i className="fas fa-arrow-down text-lg md:text-xl"></i>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="bg-white rounded-xl shadow-card p-4 md:p-6">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-xs md:text-sm font-medium text-gray-600">Net Profit</p>
-                                                <p className="text-lg md:text-2xl font-bold text-blue-600">{formatCurrency(financials.netProfit, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
-                                            </div>
-                                            <div className="p-2 md:p-3 rounded-lg bg-blue-100 text-blue-600">
-                                                <i className="fas fa-chart-line text-lg md:text-xl"></i>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="bg-white rounded-xl shadow-card p-4 md:p-6">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-xs md:text-sm font-medium text-gray-600">Pending</p>
-                                                <p className="text-lg md:text-2xl font-bold text-yellow-600">{formatCurrency(financials.pendingAmount, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
-                                            </div>
-                                            <div className="p-2 md:p-3 rounded-lg bg-yellow-100 text-yellow-600">
-                                                <i className="fas fa-clock text-lg md:text-xl"></i>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+{/* ========== FINANCIAL SUMMARY CARDS - SMART BUSINESS ========== */}
+<div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 md:gap-3 mb-4">
+    {/* Confirmed Income */}
+    <div className="bg-white rounded-lg shadow-card p-3 border-l-4 border-green-500">
+        <div className="flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-gray-500 truncate">Confirmed</p>
+                <p className="text-sm md:text-base font-bold text-green-600 truncate">
+                    {formatCurrency(financials.confirmedIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
+                </p>
+            </div>
+            <div className="p-2 rounded-full bg-green-100 text-green-600 flex-shrink-0 ml-1">
+                <i className="fas fa-check text-xs"></i>
+            </div>
+        </div>
+    </div>
 
-                                {/* Currency Info */}
-                                <div className="bg-white rounded-xl shadow-card p-4 md:p-6 mb-4 md:mb-6">
-                                    <h3 className="text-base md:text-lg font-semibold text-gray-900 mb-4">Currency Information</h3>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <p className="text-xs md:text-sm text-gray-600">Default Currency</p>
-                                            <p className="text-base md:text-lg font-medium text-gray-900">{CONFIG.DEFAULT_DISPLAY_CURRENCY}</p>
-                                        </div>
-                                        <div>
-                                            <p className="text-xs md:text-sm text-gray-600">Exchange Rate (BDT/USD)</p>
-                                            <p className="text-base md:text-lg font-medium text-gray-900">{CONFIG.EXCHANGE_RATE_BDT_PER_USD}</p>
-                                        </div>
-                                    </div>
-                                </div>
+    {/* Pending Income */}
+    <div className="bg-white rounded-lg shadow-card p-3 border-l-4 border-yellow-500">
+        <div className="flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-gray-500 truncate">Pending ({financials.pendingOrdersCount})</p>
+                <p className="text-sm md:text-base font-bold text-yellow-600 truncate">
+                    {formatCurrency(financials.pendingIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
+                </p>
+            </div>
+            <div className="p-2 rounded-full bg-yellow-100 text-yellow-600 flex-shrink-0 ml-1">
+                <i className="fas fa-clock text-xs"></i>
+            </div>
+        </div>
+    </div>
 
-                                {/* Export Options */}
-                                <div className="bg-white rounded-xl shadow-card p-4 md:p-6">
-                                    <h3 className="text-base md:text-lg font-semibold text-gray-900 mb-4">Export Financial Data</h3>
-                                    <div className="flex flex-wrap gap-2 md:gap-4">
-                                        <button onClick={exportCSV} className="px-3 md:px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 flex items-center">
-                                            <i className="fas fa-file-csv mr-2"></i>Export CSV
-                                        </button>
-                                        <button onClick={exportPDF} className="px-3 md:px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 flex items-center">
-                                            <i className="fas fa-file-pdf mr-2"></i>Export PDF
-                                        </button>
-                                        <button onClick={printOrders} className="px-3 md:px-4 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 flex items-center">
-                                            <i className="fas fa-print mr-2"></i>Print
-                                        </button>
-                                    </div>
+    {/* Expenses */}
+    <div className="bg-white rounded-lg shadow-card p-3 border-l-4 border-orange-500">
+        <div className="flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-gray-500 truncate">Expenses</p>
+                <p className="text-sm md:text-base font-bold text-orange-600 truncate">
+                    {formatCurrency(financials.totalExpenses, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
+                </p>
+            </div>
+            <div className="p-2 rounded-full bg-orange-100 text-orange-600 flex-shrink-0 ml-1">
+                <i className="fas fa-users text-xs"></i>
+            </div>
+        </div>
+    </div>
+
+    {/* Cost */}
+    <div className="bg-white rounded-lg shadow-card p-3 border-l-4 border-red-500">
+        <div className="flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-gray-500 truncate">Cost</p>
+                <p className="text-sm md:text-base font-bold text-red-600 truncate">
+                    {formatCurrency(financials.totalCost, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
+                </p>
+            </div>
+            <div className="p-2 rounded-full bg-red-100 text-red-600 flex-shrink-0 ml-1">
+                <i className="fas fa-receipt text-xs"></i>
+            </div>
+        </div>
+    </div>
+
+    {/* Net Profit */}
+    <div className={`rounded-lg shadow-card p-3 col-span-2 ${financials.netProfit >= 0 ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white' : 'bg-gradient-to-r from-red-500 to-pink-600 text-white'}`}>
+        <div className="flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium opacity-90 truncate">Net Profit</p>
+                <p className="text-sm md:text-base font-bold truncate">
+                    {formatCurrency(financials.netProfit, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
+                </p>
+                <p className="text-xs opacity-75 mt-0.5">
+                    {financials.netProfit < 0 ? '📉 Loss' : '📈 Profit'}
+                </p>
+            </div>
+            <div className="p-2 rounded-full bg-white/20 flex-shrink-0 ml-1">
+                <i className="fas fa-chart-line text-xs"></i>
+            </div>
+        </div>
+    </div>
+</div>
+
+        {/* ========== PROFIT FORMULA - SMART ========== */}
+<div className="bg-white rounded-lg shadow-card p-3 md:p-4 mb-4">
+    <h3 className="text-sm font-bold text-gray-900 mb-3 flex items-center">
+        <i className="fas fa-calculator mr-2 text-blue-600 text-xs"></i>
+        Profit Calculation
+        <span className="ml-2 text-xs font-normal text-gray-500">(Only confirmed orders count)</span>
+    </h3>
+    <div className="flex flex-wrap items-center justify-center gap-1 md:gap-2 text-center">
+        <div className="bg-green-50 px-2 py-1.5 rounded-lg border border-green-200">
+            <p className="text-xs text-green-600 font-medium">Confirmed</p>
+            <p className="text-xs md:text-sm font-bold text-green-700">{formatCurrency(financials.confirmedIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
+        </div>
+        <span className="text-lg font-bold text-gray-400">−</span>
+        <div className="bg-orange-50 px-2 py-1.5 rounded-lg border border-orange-200">
+            <p className="text-xs text-orange-600 font-medium">Expenses</p>
+            <p className="text-xs md:text-sm font-bold text-orange-700">{formatCurrency(financials.totalExpenses, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
+        </div>
+        <span className="text-lg font-bold text-gray-400">−</span>
+        <div className="bg-red-50 px-2 py-1.5 rounded-lg border border-red-200">
+            <p className="text-xs text-red-600 font-medium">Cost</p>
+            <p className="text-xs md:text-sm font-bold text-red-700">{formatCurrency(financials.totalCost, CONFIG.DEFAULT_DISPLAY_CURRENCY)}</p>
+        </div>
+        <span className="text-lg font-bold text-gray-400">=</span>
+        <div className={`px-2 py-1.5 rounded-lg border ${financials.netProfit >= 0 ? 'bg-blue-50 border-blue-200' : 'bg-red-50 border-red-200'}`}>
+            <p className={`text-xs font-medium ${financials.netProfit >= 0 ? 'text-blue-600' : 'text-red-600'}`}>Profit</p>
+            <p className={`text-xs md:text-sm font-bold ${financials.netProfit >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
+                {formatCurrency(financials.netProfit, CONFIG.DEFAULT_DISPLAY_CURRENCY)}
+            </p>
+        </div>
+    </div>
+    
+    {/* Pending Warning */}
+    {financials.pendingOrdersCount > 0 && (
+        <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
+            <p className="text-xs text-yellow-700 text-center">
+                <i className="fas fa-exclamation-triangle mr-1"></i>
+                {financials.pendingOrdersCount} pending order(s) worth {formatCurrency(financials.pendingIncome, CONFIG.DEFAULT_DISPLAY_CURRENCY)} not included in profit yet
+            </p>
+        </div>
+    )}
+</div>
+
+        {/* ========== MANUAL COSTS SECTION ========== */}
+        <div className="bg-white rounded-xl shadow-card overflow-hidden mb-6">
+            <div className="px-4 md:px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-gradient-to-r from-red-50 to-orange-50">
+                <div>
+                    <h3 className="text-lg font-bold text-gray-900 flex items-center">
+                        <i className="fas fa-receipt mr-2 text-red-600"></i>
+                        Manual Costs
+                    </h3>
+                    <p className="text-sm text-gray-600">Add, edit, or remove business expenses</p>
+                </div>
+                <button 
+                    onClick={handleCreateCost}
+                    className="w-full sm:w-auto px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 flex items-center justify-center text-sm"
+                >
+                    <i className="fas fa-plus mr-2"></i>Add Cost
+                </button>
+            </div>
+
+            {/* Costs List */}
+            <div className="divide-y divide-gray-100">
+                {costs.filter(c => c.createdAt && c.createdAt.startsWith(selectedMonth)).length === 0 ? (
+                    <div className="px-6 py-12 text-center">
+                        <i className="fas fa-receipt text-4xl text-gray-300 mb-4"></i>
+                        <p className="text-gray-500 mb-4">No costs recorded for this month</p>
+                        <button 
+                            onClick={handleCreateCost}
+                            className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700"
+                        >
+                            <i className="fas fa-plus mr-2"></i>Add First Cost
+                        </button>
+                    </div>
+                ) : (
+                    costs.filter(c => c.createdAt && c.createdAt.startsWith(selectedMonth)).map(cost => (
+                        <div key={cost.id} className="px-4 md:px-6 py-4 hover:bg-gray-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center text-red-600">
+                                    <i className="fas fa-minus"></i>
+                                </div>
+                                <div>
+                                    <p className="font-medium text-gray-900">{cost.title}</p>
+                                    <p className="text-xs text-gray-500">
+                                        <span className="bg-gray-100 px-2 py-0.5 rounded mr-2">{cost.category}</span>
+                                        {cost.createdAt}
+                                    </p>
+                                    {cost.note && <p className="text-xs text-gray-400 mt-1">{cost.note}</p>}
                                 </div>
                             </div>
-                        )}
+                            <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+                                <span className="text-lg font-bold text-red-600">
+                                    -{formatCurrency(cost.amount, cost.currency)}
+                                </span>
+                                <div className="flex gap-2">
+                                    <button 
+                                        onClick={() => handleEditCost(cost)}
+                                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"
+                                    >
+                                        <i className="fas fa-edit"></i>
+                                    </button>
+                                    <button 
+                                        onClick={() => handleDeleteCost(cost.id)}
+                                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
+                                    >
+                                        <i className="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    ))
+                )}
+            </div>
+        </div>
+
+        {/* ========== EXPORT & CURRENCY INFO ========== */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Live Exchange Rate */}
+<div className="bg-white rounded-lg shadow-card p-3">
+    <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center">
+        <i className="fas fa-coins mr-2 text-yellow-600 text-xs"></i>
+        Exchange Rate
+        <span className="ml-auto px-1.5 py-0.5 bg-green-100 text-green-700 text-xs rounded-full">
+            🔴 Live
+        </span>
+    </h3>
+    <div className="bg-gradient-to-r from-green-50 to-blue-50 p-2 rounded-lg border border-green-200">
+        <div className="flex items-center justify-between">
+            <div>
+                <p className="text-xs text-gray-600">1 USD =</p>
+                <p className="text-lg font-bold text-green-700">{exchangeRate} BDT</p>
+            </div>
+            <button 
+                onClick={fetchExchangeRate}
+                className="p-2 bg-white rounded-lg shadow-sm hover:shadow text-blue-600 text-xs"
+                title="Refresh Rate"
+            >
+                <i className="fas fa-sync-alt"></i>
+            </button>
+        </div>
+        {rateLastUpdated && (
+            <p className="text-xs text-gray-500 mt-1">
+                Updated: {new Date(rateLastUpdated).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+            </p>
+        )}
+    </div>
+</div>
+
+            {/* Export Options */}
+            <div className="bg-white rounded-xl shadow-card p-4 md:p-6">
+                <h3 className="text-base md:text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                    <i className="fas fa-download mr-2 text-blue-600"></i>
+                    Export Financial Data
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                    <button onClick={exportCSV} className="flex-1 px-3 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 flex items-center justify-center">
+                        <i className="fas fa-file-csv mr-2"></i>CSV
+                    </button>
+                    <button onClick={exportPDF} className="flex-1 px-3 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 flex items-center justify-center">
+                        <i className="fas fa-file-pdf mr-2"></i>PDF
+                    </button>
+                    <button onClick={printOrders} className="flex-1 px-3 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 flex items-center justify-center">
+                        <i className="fas fa-print mr-2"></i>Print
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+)}
 
                         {/* Announcements Tab */}
                         {activeTab === 'announcements' && (
@@ -4169,6 +5016,327 @@ const getTeamMemberAssignment = (order, memberId) => {
                                 </div>
                             </div>
                         )}
+                        
+                        {/* ==================== REPORTS TAB ==================== */}
+{activeTab === 'reports' && (
+    <div className="w-full">
+        {/* Header */}
+        <div className="mb-4 md:mb-6">
+            <h2 className="text-xl md:text-2xl font-bold text-gray-900">Reports & Analytics</h2>
+            <p className="text-sm md:text-base text-gray-600">Generate detailed business reports by date range</p>
+        </div>
+        
+        {/* Date Range Selector */}
+        <div className="bg-white rounded-xl shadow-card p-4 md:p-6 mb-4">
+            <h3 className="text-base font-semibold text-gray-900 mb-4 flex items-center">
+                <i className="fas fa-calendar-alt mr-2 text-blue-600"></i>
+                Select Date Range
+            </h3>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+                {/* Start Date */}
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">From Date</label>
+                    <input 
+                        type="date"
+                        value={reportStartDate}
+                        onChange={(e) => setReportStartDate(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+                    />
+                </div>
+                
+                {/* End Date */}
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">To Date</label>
+                    <input 
+                        type="date"
+                        value={reportEndDate}
+                        onChange={(e) => setReportEndDate(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+                    />
+                </div>
+                
+                {/* Quick Select Buttons */}
+                <div className="sm:col-span-2 flex flex-wrap gap-2 items-end">
+                    <button 
+                        onClick={() => {
+                            const today = new Date();
+                            setReportStartDate(today.toISOString().slice(0, 10));
+                            setReportEndDate(today.toISOString().slice(0, 10));
+                        }}
+                        className="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200"
+                    >
+                        Today
+                    </button>
+                    <button 
+                        onClick={() => {
+                            const today = new Date();
+                            const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+                            setReportStartDate(weekAgo.toISOString().slice(0, 10));
+                            setReportEndDate(today.toISOString().slice(0, 10));
+                        }}
+                        className="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200"
+                    >
+                        Last 7 Days
+                    </button>
+                    <button 
+                        onClick={() => {
+                            const today = new Date();
+                            const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+                            setReportStartDate(monthStart.toISOString().slice(0, 10));
+                            setReportEndDate(today.toISOString().slice(0, 10));
+                        }}
+                        className="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200"
+                    >
+                        This Month
+                    </button>
+                    <button 
+                        onClick={() => {
+                            const today = new Date();
+                            const yearStart = new Date(today.getFullYear(), 0, 1);
+                            setReportStartDate(yearStart.toISOString().slice(0, 10));
+                            setReportEndDate(today.toISOString().slice(0, 10));
+                        }}
+                        className="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200"
+                    >
+                        This Year
+                    </button>
+                    <button 
+                        onClick={generateReport}
+                        disabled={isGeneratingReport}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center"
+                    >
+                        {isGeneratingReport ? (
+                            <><i className="fas fa-spinner fa-spin mr-2"></i>Generating...</>
+                        ) : (
+                            <><i className="fas fa-search mr-2"></i>Generate Report</>
+                        )}
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        {/* Report Results */}
+        {reportData && (
+            <div className="space-y-4">
+                {/* Report Header with Print Button */}
+                <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl p-4 text-white">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <h3 className="text-lg font-bold">📊 Report Generated</h3>
+                            <p className="text-sm text-blue-100">
+                                {new Date(reportData.dateRange.start).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })} 
+                                {' '} — {' '}
+                                {new Date(reportData.dateRange.end).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+                            </p>
+                        </div>
+                        <button 
+                            onClick={printReport}
+                            className="px-4 py-2 bg-white text-blue-600 rounded-lg font-medium hover:bg-blue-50 flex items-center"
+                        >
+                            <i className="fas fa-print mr-2"></i>Print Report
+                        </button>
+                    </div>
+                </div>
+                
+                {/* Summary Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                    <div className="bg-white rounded-lg shadow-card p-3 text-center">
+                        <p className="text-2xl font-bold text-blue-600">{reportData.summary.totalOrders}</p>
+                        <p className="text-xs text-gray-600">Total Orders</p>
+                    </div>
+                    <div className="bg-white rounded-lg shadow-card p-3 text-center">
+                        <p className="text-2xl font-bold text-green-600">{reportData.summary.completedOrders}</p>
+                        <p className="text-xs text-gray-600">Completed</p>
+                    </div>
+                    <div className="bg-white rounded-lg shadow-card p-3 text-center">
+                        <p className="text-2xl font-bold text-yellow-600">{reportData.summary.pendingOrders}</p>
+                        <p className="text-xs text-gray-600">Pending</p>
+                    </div>
+                    <div className="bg-white rounded-lg shadow-card p-3 text-center">
+                        <p className="text-2xl font-bold text-purple-600">{reportData.summary.confirmedOrders}</p>
+                        <p className="text-xs text-gray-600">Confirmed</p>
+                    </div>
+                    <div className="bg-white rounded-lg shadow-card p-3 text-center">
+                        <p className="text-2xl font-bold text-indigo-600">{reportData.summary.uniqueClients}</p>
+                        <p className="text-xs text-gray-600">Clients</p>
+                    </div>
+                    <div className="bg-white rounded-lg shadow-card p-3 text-center">
+                        <p className="text-2xl font-bold text-pink-600">{reportData.teamStats.length}</p>
+                        <p className="text-xs text-gray-600">Team Members</p>
+                    </div>
+                </div>
+                
+                {/* Financial Summary */}
+                <div className="bg-white rounded-xl shadow-card p-4">
+                    <h3 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
+                        <i className="fas fa-coins mr-2 text-yellow-600"></i>
+                        Financial Summary
+                    </h3>
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                        <div className="bg-green-50 p-3 rounded-lg">
+                            <p className="text-xs text-green-600 font-medium">Total Revenue</p>
+                            <p className="text-lg font-bold text-green-700">{formatCurrency(reportData.financials.totalRevenue, 'BDT')}</p>
+                        </div>
+                        <div className="bg-blue-50 p-3 rounded-lg">
+                            <p className="text-xs text-blue-600 font-medium">Total Paid</p>
+                            <p className="text-lg font-bold text-blue-700">{formatCurrency(reportData.financials.totalPaid, 'BDT')}</p>
+                        </div>
+                        <div className="bg-red-50 p-3 rounded-lg">
+                            <p className="text-xs text-red-600 font-medium">Total Due</p>
+                            <p className="text-lg font-bold text-red-700">{formatCurrency(reportData.financials.totalDue, 'BDT')}</p>
+                        </div>
+                        <div className="bg-orange-50 p-3 rounded-lg">
+                            <p className="text-xs text-orange-600 font-medium">Team Budget</p>
+                            <p className="text-lg font-bold text-orange-700">{formatCurrency(reportData.financials.totalTeamBudget, 'BDT')}</p>
+                        </div>
+                        <div className="bg-pink-50 p-3 rounded-lg">
+                            <p className="text-xs text-pink-600 font-medium">Other Costs</p>
+                            <p className="text-lg font-bold text-pink-700">{formatCurrency(reportData.financials.totalCosts, 'BDT')}</p>
+                        </div>
+                        <div className={`p-3 rounded-lg ${reportData.financials.netProfit >= 0 ? 'bg-emerald-50' : 'bg-red-50'}`}>
+                            <p className={`text-xs font-medium ${reportData.financials.netProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>Net Profit</p>
+                            <p className={`text-lg font-bold ${reportData.financials.netProfit >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                                {formatCurrency(reportData.financials.netProfit, 'BDT')}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                
+                {/* Team Performance */}
+                {reportData.teamStats.length > 0 && (
+                    <div className="bg-white rounded-xl shadow-card p-4">
+                        <h3 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
+                            <i className="fas fa-users mr-2 text-blue-600"></i>
+                            Team Performance
+                        </h3>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
+                                        <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Orders</th>
+                                        <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Budget</th>
+                                        <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Paid</th>
+                                        <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Due</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-200">
+                                    {reportData.teamStats.map((member, index) => (
+                                        <tr key={index} className="hover:bg-gray-50">
+                                            <td className="px-4 py-3 text-sm font-medium text-gray-900">{member.name}</td>
+                                            <td className="px-4 py-3 text-sm text-gray-600">{member.role}</td>
+                                            <td className="px-4 py-3 text-sm text-center text-gray-900">{member.orders}</td>
+                                            <td className="px-4 py-3 text-sm text-right text-blue-600 font-medium">{formatCurrency(member.budget, 'BDT')}</td>
+                                            <td className="px-4 py-3 text-sm text-right text-green-600 font-medium">{formatCurrency(member.paid, 'BDT')}</td>
+                                            <td className="px-4 py-3 text-sm text-right text-red-600 font-medium">{formatCurrency(member.budget - member.paid, 'BDT')}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                )}
+                
+                {/* Orders List */}
+                <div className="bg-white rounded-xl shadow-card p-4">
+                    <h3 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
+                        <i className="fas fa-clipboard-list mr-2 text-purple-600"></i>
+                        Orders ({reportData.orders.length})
+                    </h3>
+                    
+                    {/* Mobile Cards */}
+                    <div className="lg:hidden space-y-3">
+                        {reportData.orders.map(order => (
+                            <div key={order.id} className="border border-gray-200 rounded-lg p-3">
+                                <div className="flex justify-between items-start mb-2">
+                                    <div>
+                                        <p className="font-bold text-gray-900">{order.id}</p>
+                                        <p className="text-sm text-gray-600">{order.clientName}</p>
+                                    </div>
+                                    <span className={`px-2 py-0.5 text-xs rounded-full ${getStatusClass(order.status)}`}>
+                                        {order.status}
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2 text-sm">
+                                    <div>
+                                        <span className="text-gray-500">Service:</span>
+                                        <p className="font-medium">{order.serviceType}</p>
+                                    </div>
+                                    <div>
+                                        <span className="text-gray-500">Price:</span>
+                                        <p className="font-medium">{formatCurrency(order.price, order.currency)}</p>
+                                    </div>
+                                    <div>
+                                        <span className="text-gray-500">Date:</span>
+                                        <p className="font-medium">{order.createdAt}</p>
+                                    </div>
+                                    <div>
+                                        <span className="text-gray-500">Payment:</span>
+                                        <span className={`px-2 py-0.5 text-xs rounded-full ${getPaymentClass(order.paymentStatus)}`}>
+                                            {order.paymentStatus}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                    
+                    {/* Desktop Table */}
+                    <div className="hidden lg:block overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                            <thead className="bg-gray-50">
+                                <tr>
+                                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Order ID</th>
+                                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Client</th>
+                                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Service</th>
+                                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Price</th>
+                                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+                                    <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Payment</th>
+                                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-gray-200">
+                                {reportData.orders.map(order => (
+                                    <tr key={order.id} className="hover:bg-gray-50">
+                                        <td className="px-4 py-3 text-sm font-bold text-gray-900">{order.id}</td>
+                                        <td className="px-4 py-3 text-sm text-gray-900">{order.clientName}</td>
+                                        <td className="px-4 py-3 text-sm text-gray-600">{order.serviceType}</td>
+                                        <td className="px-4 py-3 text-sm text-right font-medium text-gray-900">{formatCurrency(order.price, order.currency)}</td>
+                                        <td className="px-4 py-3 text-center">
+                                            <span className={`px-2 py-0.5 text-xs rounded-full ${getStatusClass(order.status)}`}>{order.status}</span>
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <span className={`px-2 py-0.5 text-xs rounded-full ${getPaymentClass(order.paymentStatus)}`}>{order.paymentStatus}</span>
+                                        </td>
+                                        <td className="px-4 py-3 text-sm text-gray-600">{order.createdAt}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    {reportData.orders.length === 0 && (
+                        <div className="text-center py-8 text-gray-500">
+                            <i className="fas fa-inbox text-3xl mb-2"></i>
+                            <p>No orders found in this date range</p>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
+        
+        {/* No Report Yet */}
+        {!reportData && (
+            <div className="bg-white rounded-xl shadow-card p-8 text-center">
+                <i className="fas fa-chart-bar text-5xl text-gray-300 mb-4"></i>
+                <h3 className="text-lg font-semibold text-gray-700 mb-2">No Report Generated Yet</h3>
+                <p className="text-gray-500 mb-4">Select a date range and click "Generate Report" to see your business analytics</p>
+            </div>
+        )}
+    </div>
+)}
 
                                                 {/* ==================== SETTINGS TAB (ROLE-BASED ACCESS) ==================== */}
                         {activeTab === 'settings' && (
@@ -4486,37 +5654,80 @@ const getTeamMemberAssignment = (order, memberId) => {
                     <div className="h-20 md:h-0"></div>
                     
                                         {/* ==================== MOBILE BOTTOM NAVIGATION ==================== */}
-                    <nav className="mobile-nav">
-                        <div className="flex justify-around py-2">
-                            <button onClick={() => setActiveTab('overview')} className={`flex flex-col items-center py-1 px-2 ${activeTab === 'overview' ? 'text-blue-600' : 'text-gray-500'}`}>
-                                <i className="fas fa-chart-pie text-lg"></i>
-                                <span className="text-xs mt-1">Overview</span>
-                            </button>
-                            <button onClick={() => setActiveTab('orders')} className={`flex flex-col items-center py-1 px-2 relative ${activeTab === 'orders' ? 'text-blue-600' : 'text-gray-500'}`}>
-                                <i className="fas fa-clipboard-list text-lg"></i>
-                                <span className="text-xs mt-1">Orders</span>
-                                {notificationCount > 0 && (
-                                    <span className="absolute -top-1 right-0 bg-red-500 text-white text-xs w-4 h-4 rounded-full flex items-center justify-center">{notificationCount}</span>
-                                )}
-                            </button>
-                            <button onClick={() => setActiveTab('team')} className={`flex flex-col items-center py-1 px-2 ${activeTab === 'team' ? 'text-blue-600' : 'text-gray-500'}`}>
-                                <i className="fas fa-users text-lg"></i>
-                                <span className="text-xs mt-1">Team</span>
-                            </button>
-                            <button onClick={() => setActiveTab('financials')} className={`flex flex-col items-center py-1 px-2 ${activeTab === 'financials' ? 'text-blue-600' : 'text-gray-500'}`}>
-                                <i className="fas fa-chart-line text-lg"></i>
-                                <span className="text-xs mt-1">Finance</span>
-                            </button>
-                            <button onClick={() => setActiveTab('announcements')} className={`flex flex-col items-center py-1 px-2 ${activeTab === 'announcements' ? 'text-blue-600' : 'text-gray-500'}`}>
-                                <i className="fas fa-bullhorn text-lg"></i>
-                                <span className="text-xs mt-1">Notes</span>
-                            </button>
-                            <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center py-1 px-2 ${activeTab === 'settings' ? 'text-blue-600' : 'text-gray-500'}`}>
-                                <i className="fas fa-cog text-lg"></i>
-                                <span className="text-xs mt-1">Settings</span>
-                            </button>
-                        </div>
-                    </nav>
+<nav className="mobile-nav">
+    <div className="flex justify-around py-2">
+        <button onClick={() => setActiveTab('overview')} className={`flex flex-col items-center py-1 px-1 ${activeTab === 'overview' ? 'text-blue-600' : 'text-gray-500'}`}>
+            <i className="fas fa-chart-pie text-base"></i>
+            <span className="text-xs mt-0.5">Home</span>
+        </button>
+        <button onClick={() => setActiveTab('orders')} className={`flex flex-col items-center py-1 px-1 relative ${activeTab === 'orders' ? 'text-blue-600' : 'text-gray-500'}`}>
+            <i className="fas fa-clipboard-list text-base"></i>
+            <span className="text-xs mt-0.5">Orders</span>
+            {notificationCount > 0 && (
+                <span className="absolute -top-1 right-0 bg-red-500 text-white text-xs w-4 h-4 rounded-full flex items-center justify-center">{notificationCount}</span>
+            )}
+        </button>
+        <button onClick={() => setActiveTab('team')} className={`flex flex-col items-center py-1 px-1 ${activeTab === 'team' ? 'text-blue-600' : 'text-gray-500'}`}>
+            <i className="fas fa-users text-base"></i>
+            <span className="text-xs mt-0.5">Team</span>
+        </button>
+        <button onClick={() => setActiveTab('financials')} className={`flex flex-col items-center py-1 px-1 ${activeTab === 'financials' ? 'text-blue-600' : 'text-gray-500'}`}>
+            <i className="fas fa-chart-line text-base"></i>
+            <span className="text-xs mt-0.5">Finance</span>
+        </button>
+        <button onClick={() => setActiveTab('reports')} className={`flex flex-col items-center py-1 px-1 ${activeTab === 'reports' ? 'text-blue-600' : 'text-gray-500'}`}>
+            <i className="fas fa-file-alt text-base"></i>
+            <span className="text-xs mt-0.5">Reports</span>
+        </button>
+        
+        {/* More Menu Button */}
+        <div className="relative">
+            <button 
+                onClick={() => setShowMobileMenu(!showMobileMenu)} 
+                className={`flex flex-col items-center py-1 px-1 ${['announcements', 'contacts', 'settings'].includes(activeTab) ? 'text-blue-600' : 'text-gray-500'}`}
+            >
+                <i className="fas fa-ellipsis-h text-base"></i>
+                <span className="text-xs mt-0.5">More</span>
+            </button>
+            
+            {/* More Menu Popup */}
+            {showMobileMenu && (
+                <div className="absolute bottom-full right-0 mb-2 bg-white rounded-xl shadow-xl border border-gray-200 py-2 w-48 z-50">
+                    <button 
+                        onClick={() => { setActiveTab('announcements'); setShowMobileMenu(false); }}
+                        className={`w-full px-4 py-3 text-left flex items-center ${activeTab === 'announcements' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-gray-50'}`}
+                    >
+                        <i className="fas fa-bullhorn mr-3 text-yellow-500"></i>
+                        <span className="font-medium">Announcements</span>
+                    </button>
+                    <button 
+                        onClick={() => { setActiveTab('contacts'); setShowMobileMenu(false); }}
+                        className={`w-full px-4 py-3 text-left flex items-center ${activeTab === 'contacts' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-gray-50'}`}
+                    >
+                        <i className="fas fa-address-book mr-3 text-green-500"></i>
+                        <span className="font-medium">Contacts</span>
+                    </button>
+                    <div className="border-t border-gray-100 my-1"></div>
+                    <button 
+                        onClick={() => { setActiveTab('settings'); setShowMobileMenu(false); }}
+                        className={`w-full px-4 py-3 text-left flex items-center ${activeTab === 'settings' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-gray-50'}`}
+                    >
+                        <i className="fas fa-cog mr-3 text-gray-500"></i>
+                        <span className="font-medium">Settings</span>
+                    </button>
+                </div>
+            )}
+        </div>
+    </div>
+</nav>
+
+{/* Close More Menu when clicking outside */}
+{showMobileMenu && (
+    <div 
+        className="fixed inset-0 z-40" 
+        onClick={() => setShowMobileMenu(false)}
+    ></div>
+)}
 
                     {/* ==================== ORDER MODAL (WITH MULTIPLE TEAM MEMBERS) ==================== */}
 {showOrderModal && currentOrder && (
@@ -5439,7 +6650,114 @@ const getTeamMemberAssignment = (order, memberId) => {
     </div>
 )}
                     
-                                                          {/* ==================== ACTIVITY LOG MODAL (DETAILED + NO DELETE) ==================== */}
+                                                          {/* ==================== COST MODAL (NEW) ==================== */}
+{showCostModal && currentCost && (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 md:p-4 z-50">
+        <div className="bg-white rounded-xl shadow-card w-full max-w-md modal-content">
+            <div className="p-4 md:p-6 border-b border-gray-200 bg-gradient-to-r from-red-50 to-orange-50">
+                <div className="flex justify-between items-center">
+                    <div>
+                        <h3 className="text-lg font-semibold text-gray-900">
+                            {currentCost.id ? 'Edit Cost' : 'Add New Cost'}
+                        </h3>
+                        <p className="text-sm text-gray-600 mt-1">Record business expenses</p>
+                    </div>
+                    <button onClick={() => setShowCostModal(false)} className="text-gray-400 hover:text-gray-600">
+                        <i className="fas fa-times text-xl"></i>
+                    </button>
+                </div>
+            </div>
+            <div className="p-4 md:p-6 space-y-4">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Title *</label>
+                    <input 
+                        type="text" 
+                        value={currentCost.title} 
+                        onChange={(e) => setCurrentCost({...currentCost, title: e.target.value})} 
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500" 
+                        placeholder="e.g., Office Rent, Software License"
+                    />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Amount *</label>
+                        <input 
+                            type="number" 
+                            value={currentCost.amount} 
+                            onChange={(e) => setCurrentCost({...currentCost, amount: parseFloat(e.target.value) || 0})} 
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500"
+                            placeholder="0"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Currency</label>
+                        <select 
+                            value={currentCost.currency} 
+                            onChange={(e) => setCurrentCost({...currentCost, currency: e.target.value})} 
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500"
+                        >
+                            <option value="BDT">BDT</option>
+                            <option value="USD">USD</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
+                    <select 
+                        value={currentCost.category} 
+                        onChange={(e) => setCurrentCost({...currentCost, category: e.target.value})} 
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500"
+                    >
+                        <option value="General">General</option>
+                        <option value="Office">Office</option>
+                        <option value="Software">Software</option>
+                        <option value="Equipment">Equipment</option>
+                        <option value="Marketing">Marketing</option>
+                        <option value="Utilities">Utilities</option>
+                        <option value="Travel">Travel</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+                    <input 
+                        type="date" 
+                        value={currentCost.createdAt} 
+                        onChange={(e) => setCurrentCost({...currentCost, createdAt: e.target.value})} 
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500"
+                    />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Note (Optional)</label>
+                    <textarea 
+                        value={currentCost.note || ''} 
+                        onChange={(e) => setCurrentCost({...currentCost, note: e.target.value})} 
+                        rows="2" 
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500"
+                        placeholder="Additional details..."
+                    ></textarea>
+                </div>
+            </div>
+            <div className="p-4 md:p-6 border-t border-gray-200 flex flex-col-reverse sm:flex-row justify-end gap-2 sm:space-x-3 bg-gray-50">
+                <button 
+                    onClick={() => setShowCostModal(false)} 
+                    className="w-full sm:w-auto px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50"
+                >
+                    Cancel
+                </button>
+                <button 
+                    onClick={handleSaveCost} 
+                    disabled={isSaving}
+                    className={`w-full sm:w-auto px-4 py-2 rounded-lg font-medium flex items-center justify-center ${isSaving ? 'bg-red-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'} text-white`}
+                >
+                    {isSaving ? (<><i className="fas fa-spinner fa-spin mr-2"></i>Saving...</>) : 'Save Cost'}
+                </button>
+            </div>
+        </div>
+    </div>
+)}
+
+{/* ==================== ACTIVITY LOG MODAL ==================== */}
                     {showActivityLogModal && (
                         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-2 sm:p-4 z-50">
                             <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[95vh] overflow-hidden">
@@ -5636,4 +6954,4 @@ const getTeamMemberAssignment = (order, memberId) => {
         ReactDOM.render(<Dashboard />, document.getElementById('root'));
     </script>
 </body>
-</html>6 
+</html>
