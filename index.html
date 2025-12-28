@@ -9,7 +9,7 @@
 <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
 <script>eruda.init();</script>
 
-<!-- Error Catcher - এটা যোগ করো -->
+<!-- Error Catcher -->
 <script>
     window.onerror = function(message, source, lineno, colno, error) {
         alert("Error: " + message + "\n\nLine: " + lineno + "\n\nSource: " + source);
@@ -1247,11 +1247,32 @@ const Toast = ({ message, type, onClose }) => {
                         </div>
                     </div>
 
-                    <div className="mb-4 bg-gray-50 p-3 rounded-lg flex justify-between items-center">
-                        <span className="text-gray-600 text-sm">Budget Used:</span>
-                        <span className="font-bold text-gray-900 text-lg">
-                            {formatCurrency(member.budgetUsed || 0, member.currency)}
-                        </span>
+                    {/* Financial Stats */}
+                    <div className="grid grid-cols-3 gap-2 mb-3 bg-gray-50 p-2 rounded-lg text-center">
+                        <div>
+                            <span className="text-gray-500 text-[10px] uppercase tracking-wider">Total Earned</span>
+                            <div className="font-bold text-green-600 text-sm">{formatCurrency(member.totalPaid || 0, member.currency)}</div>
+                        </div>
+                        <div className="border-l border-gray-200">
+                            <span className="text-gray-500 text-[10px] uppercase tracking-wider">Total Due</span>
+                            <div className="font-bold text-red-600 text-sm">{formatCurrency(member.totalDue || 0, member.currency)}</div>
+                        </div>
+                        <div className="border-l border-gray-200">
+                            <span className="text-gray-500 text-[10px] uppercase tracking-wider">This Month</span>
+                            <div className="font-bold text-blue-600 text-sm">{formatCurrency(member.budgetUsed || 0, member.currency)}</div>
+                        </div>
+                    </div>
+
+                    {/* New Counters: Orders & Payment Count */}
+                    <div className="grid grid-cols-2 gap-3 mb-4">
+                        <div className="bg-purple-50 rounded-lg p-2 text-center border border-purple-100">
+                            <div className="text-purple-600 text-lg font-bold">{member.totalOrdersFinished || 0}</div>
+                            <div className="text-xs text-purple-800 font-medium">Orders Completed</div>
+                        </div>
+                        <div className="bg-indigo-50 rounded-lg p-2 text-center border border-indigo-100">
+                            <div className="text-indigo-600 text-lg font-bold">{member.totalPaymentsCleared || 0}</div>
+                            <div className="text-xs text-indigo-800 font-medium">Payments Cleared</div>
+                        </div>
                     </div>
                     
                     <div className="flex space-x-2">
@@ -1907,52 +1928,97 @@ const financials = React.useMemo(() => {
         
         const completedThisMonth = legacyCompleted + newCompleted;
         
-        // Calculate budget used
+        // 1. Calculate Monthly Budget Used (For Progress Bar)
         let budgetUsed = 0;
+        const monthlyOrders = orders.filter(order => order.createdAt && order.createdAt.startsWith(selectedMonth));
         
-        // Legacy orders
-        const legacyMonthlyOrders = orders.filter(order => 
-            order.assignedEditor === member.id &&
-            order.createdAt && order.createdAt.startsWith(selectedMonth)
-        );
-        
-        budgetUsed += legacyMonthlyOrders.reduce((sum, order) => {
-            let budgetAmount = order.teamBudget || 0;
-            if (order.currency !== member.currency) {
-                if (order.currency === "USD" && member.currency === "BDT") {
-                    budgetAmount = budgetAmount * CONFIG.EXCHANGE_RATE_BDT_PER_USD;
-                } else if (order.currency === "BDT" && member.currency === "USD") {
-                    budgetAmount = budgetAmount / CONFIG.EXCHANGE_RATE_BDT_PER_USD;
-                }
+        monthlyOrders.forEach(order => {
+             // Check New Assignment
+             const assignment = (order.assignedMembers || []).find(m => m.memberId === member.id);
+             if (assignment) {
+                 let budget = assignment.budget || 0;
+                 if (order.currency === "USD" && member.currency === "BDT") budget *= CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                 else if (order.currency === "BDT" && member.currency === "USD") budget /= CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                 budgetUsed += budget;
+             } 
+             // Check Legacy Assignment
+             else if (order.assignedEditor === member.id) {
+                 let budget = order.teamBudget || 0;
+                 if (order.currency === "USD" && member.currency === "BDT") budget *= CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                 else if (order.currency === "BDT" && member.currency === "USD") budget /= CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                 budgetUsed += budget;
+             }
+        });
+
+        // 2. Calculate All Time Totals & Counts
+        let totalBudget = 0;
+        let totalPaid = 0;
+        let totalOrdersFinished = 0;   // New: কাজের সংখ্যা
+        let totalPaymentsCleared = 0;  // New: পেমেন্টের সংখ্যা
+
+        orders.forEach(order => {
+            let budget = 0;
+            let paid = 0;
+            let isAssigned = false;
+            let paymentStatus = 'Pending';
+
+            // Legacy Check
+            if (order.assignedEditor === member.id && !(order.assignedMembers || []).length) {
+                budget = order.teamBudget || 0;
+                paid = order.teamPaidAmount || 0;
+                paymentStatus = order.teamPaymentStatus || 'Pending';
+                isAssigned = true;
             }
-            return sum + budgetAmount;
-        }, 0);
-        
-        // New orders with multiple members
-        const newMonthlyOrders = orders.filter(order => 
-            order.createdAt && order.createdAt.startsWith(selectedMonth)
-        );
-        
-        newMonthlyOrders.forEach(order => {
-            const memberAssignment = (order.assignedMembers || []).find(m => m.memberId === member.id);
-            if (memberAssignment) {
-                let budgetAmount = memberAssignment.budget || 0;
-                if (order.currency !== member.currency) {
-                    if (order.currency === "USD" && member.currency === "BDT") {
-                        budgetAmount = budgetAmount * CONFIG.EXCHANGE_RATE_BDT_PER_USD;
-                    } else if (order.currency === "BDT" && member.currency === "USD") {
-                        budgetAmount = budgetAmount / CONFIG.EXCHANGE_RATE_BDT_PER_USD;
-                    }
+            
+            // New Assignment Check
+            const assignment = (order.assignedMembers || []).find(m => m.memberId === member.id);
+            if (assignment) {
+                budget = assignment.budget || 0;
+                paid = assignment.paidAmount || 0;
+                paymentStatus = assignment.paymentStatus || 'Pending';
+                isAssigned = true;
+            }
+
+            if (isAssigned) {
+                // Count Completed Orders
+                if (order.status === 'Completed') {
+                    totalOrdersFinished++;
                 }
-                budgetUsed += budgetAmount;
+
+                // Count Fully Paid Projects
+                if (paymentStatus === 'Paid') {
+                    totalPaymentsCleared++;
+                }
+
+                // Financials Calculation
+                if (budget > 0 || paid > 0) {
+                    if (order.currency !== member.currency) {
+                        if (order.currency === "USD" && member.currency === "BDT") {
+                            budget *= CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                            paid *= CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                        } else if (order.currency === "BDT" && member.currency === "USD") {
+                            budget /= CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                            paid /= CONFIG.EXCHANGE_RATE_BDT_PER_USD;
+                        }
+                    }
+                    totalBudget += budget;
+                    totalPaid += paid;
+                }
             }
         });
+
+        const totalDue = totalBudget - totalPaid;
         
         return {
             ...member,
             activeProjects,
             completedThisMonth,
             budgetUsed,
+            totalBudget,
+            totalPaid,
+            totalDue,
+            totalOrdersFinished,  // Return new count
+            totalPaymentsCleared, // Return new count
             budgetPercentage: member.monthlyBudget ? (budgetUsed / member.monthlyBudget) * 100 : 0
         };
     });
@@ -2541,7 +2607,13 @@ setTimeout(async () => {
                 try {
                     const orderToUpdate = orders.find(o => o.id === orderId);
                     if (orderToUpdate) {
-                        const updatedOrder = { ...orderToUpdate, status: newStatus };
+                        let updatedOrder = { ...orderToUpdate, status: newStatus };
+                        
+                        // লজিক: যদি স্ট্যাটাস completed
+                        if (newStatus === 'Completed' && orderToUpdate.status !== 'Completed') {
+                            updatedOrder.completedAt = new Date().toISOString();
+                        }
+                        
                         await FirebaseService.saveOrder(updatedOrder);
                         showToast('Status updated', 'success');
                     }
@@ -4482,39 +4554,25 @@ const toggleOrderSelection = (orderId) => {
                                     )}
                                 </div>
 
-                                {/* Team & Project Details Table */}
-                                <div className="mt-6 bg-white rounded-xl shadow-card overflow-hidden">
-                                    <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                                        <h3 className="text-lg font-bold text-gray-900">Assigned Projects & Team Payment</h3>
-                                    </div>
-                                    <div className="overflow-x-auto">
-                                        <table className="min-w-full divide-y divide-gray-200">
-                                            <thead className="bg-gray-100">
-                                                <tr>
-                                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Project Info</th>
-                                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Editor</th>
-                                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Budget</th>
-                                                    <th className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Payment Status</th>
-                                                    <th className="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Action</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="bg-white divide-y divide-gray-200">
+                                {/* Team & Project Details Table (UPDATED WITH ARCHIVE LOGIC) */}
+<div className="mt-6 space-y-6">
+    
     {(() => {
-        // সব active assignments collect করি
-        const activeAssignments = [];
-        
-        orders.filter(o => o.status !== 'Completed').forEach(order => {
+        // 1. Separate Active and History Lists
+        const activeList = [];
+        const historyList = [];
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30); // 1 Month Logic
+
+        orders.forEach(order => {
             const members = order.assignedMembers || [];
-            
-            // নতুন format - multiple members
+            const assignments = [];
+
+            // Collect assignments (New & Legacy)
             if (members.length > 0) {
-                members.forEach(member => {
-                    activeAssignments.push({ order, member });
-                });
-            } 
-            // Legacy format - single assignedEditor
-            else if (order.assignedEditor) {
-                activeAssignments.push({ 
+                members.forEach(member => assignments.push({ order, member }));
+            } else if (order.assignedEditor) {
+                assignments.push({ 
                     order, 
                     member: { 
                         memberId: order.assignedEditor, 
@@ -4525,101 +4583,179 @@ const toggleOrderSelection = (orderId) => {
                     }
                 });
             }
-        });
-        
-        // যদি কোনো assignment না থাকে
-        if (activeAssignments.length === 0) {
-            return (
-                <tr>
-                    <td colSpan="5" className="px-6 py-8 text-center text-gray-500">
-                        <i className="fas fa-clipboard-list text-3xl text-gray-300 mb-3 block"></i>
-                        No active assigned projects.
-                    </td>
-                </tr>
-            );
-        }
-        
-        // প্রতিটা assignment এর জন্য row render করি
-        return activeAssignments.map(({ order, member }, index) => {
-            const teamMember = getTeamMemberById(member.memberId, team);
-            const teamPaid = member.paidAmount || 0;
-            const teamStatus = member.paymentStatus || 'Pending';
-            const budget = member.budget || 0;
-            
-            return (
-                <tr key={`${order.id}-${member.memberId}-${index}`} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="font-bold text-gray-900">{order.id}</div>
-                        <div className="text-xs text-gray-500">{order.clientName}</div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold mr-2">
-                                {getInitials(teamMember.name)}
-                            </div>
-                            <div>
-                                <span className="text-sm font-medium text-gray-900">{teamMember.name}</span>
-                                <p className="text-xs text-gray-500">{teamMember.role || 'Team Member'}</p>
-                            </div>
-                        </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="text-blue-600 font-bold text-lg">
-                            {formatCurrency(budget, order.currency)}
-                        </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`px-2 py-1 text-xs rounded-full font-bold ${
-                            teamStatus === 'Paid' ? 'bg-green-100 text-green-800' :
-                            teamStatus === 'Partial' ? 'bg-yellow-100 text-yellow-800' :
-                            'bg-red-100 text-red-800'
-                        }`}>
-                            {teamStatus}
-                        </span>
-                        <div className="text-xs text-gray-500 mt-1 font-medium">
-                            Paid: {formatCurrency(teamPaid, order.currency)}
-                        </div>
-                        {/* Progress Bar */}
-                        {budget > 0 && (
-                            <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
-                                <div 
-                                    className={`h-1.5 rounded-full ${
-                                        teamStatus === 'Paid' ? 'bg-green-500' : 
-                                        teamStatus === 'Partial' ? 'bg-yellow-500' : 
-                                        'bg-gray-300'
-                                    }`}
-                                    style={{ width: `${Math.min((teamPaid / budget) * 100, 100)}%` }}
-                                ></div>
-                            </div>
-                        )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right">
-                        <button 
-                            onClick={() => {
-                                setCurrentOrder({
-                                    ...order,
-                                    selectedMemberId: member.memberId,
-                                    teamPaidAmount: teamPaid,
-                                    teamPaymentStatus: teamStatus
-                                });
-                                setShowTeamPaymentModal(true);
-                            }}
-                            className="inline-flex items-center px-4 py-2 border border-transparent text-xs font-bold rounded-lg text-white bg-blue-600 hover:bg-blue-700 shadow-sm transition-all"
-                        >
-                            <i className="fas fa-hand-holding-usd mr-2"></i> Pay
-                        </button>
-                        </td>
-                        </tr>
-                        );
-                        });
-                        })()}
-                        </tbody>
-                        </table>
-                        </div>
-                        </div>
-                        </div>
-                        )}
 
+            // Logic: Active vs History
+            assignments.forEach(item => {
+                const { order, member } = item;
+                const isCompleted = order.status === 'Completed';
+                const isPaid = member.paymentStatus === 'Paid';
+                
+                // তারিখ চেক: completedAt না থাকলে createdAt ব্যবহার হবে
+                const completedDate = order.completedAt ? new Date(order.completedAt) : new Date(order.createdAt);
+                const isOld = completedDate < thirtyDaysAgo;
+
+                // শর্ত:
+                // ১. যদি কমপ্লিট না হয় -> Active (Always)
+                // ২. যদি কমপ্লিট হয় কিন্তু টাকা বাকি থাকে (Not Paid) -> Active (Always)
+                // ৩. যদি কমপ্লিট হয়, টাকাও পেইড, কিন্তু ১ মাস হয়নি -> Active (1 Month Rule)
+                // ৪. বাকি সব (Paid + Completed + >1 Month Old) -> History Folder
+                
+                if (!isCompleted || !isPaid || (isCompleted && isPaid && !isOld)) {
+                    activeList.push(item);
+                } else {
+                    historyList.push(item);
+                }
+            });
+        });
+
+        // Helper function to render tables
+        const RenderTable = ({ data, title, icon, headerClass, isHistory }) => (
+            <div className="bg-white rounded-xl shadow-card overflow-hidden">
+                <div className={`px-6 py-4 border-b border-gray-200 flex justify-between items-center ${headerClass}`}>
+                    <h3 className="text-lg font-bold text-gray-900 flex items-center">
+                        <i className={`fas ${icon} mr-2`}></i> {title}
+                    </h3>
+                    <span className="bg-white/80 px-2 py-1 rounded text-xs font-bold text-gray-600 border shadow-sm">
+                        {data.length} Projects
+                    </span>
+                </div>
+                <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                            <tr>
+                                <th className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Project</th>
+                                <th className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Editor</th>
+                                <th className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Budget</th>
+                                <th className="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Status</th>
+                                {!isHistory && <th className="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Action</th>}
+                            </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-200">
+                            {data.length === 0 ? (
+                                <tr>
+                                    <td colSpan="5" className="px-6 py-8 text-center text-gray-500">
+                                        No projects in this list.
+                                    </td>
+                                </tr>
+                            ) : (
+                                data.map(({ order, member }, index) => {
+                                    const teamMember = getTeamMemberById(member.memberId, team);
+                                    const budget = member.budget || 0;
+                                    const paid = member.paidAmount || 0;
+                                    
+                                    return (
+                                        <tr key={`${order.id}-${member.memberId}-${index}`} className="hover:bg-gray-50">
+                                            <td className="px-6 py-4">
+                                                <div className="font-bold text-gray-900">{order.id}</div>
+                                                <div className="text-xs text-gray-500">{order.clientName}</div>
+                                                {order.status === 'Completed' && (
+                                                    <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded mt-1 inline-block border border-green-200">Completed</span>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center">
+                                                    <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 text-xs font-bold mr-2">
+                                                        {getInitials(teamMember.name)}
+                                                    </div>
+                                                    <div>
+                                                        <span className="text-sm font-medium">{teamMember.name}</span>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                 <span className="font-bold text-gray-800">{formatCurrency(budget, order.currency)}</span>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="flex flex-col">
+                                                    <span className={`px-2 py-1 text-xs rounded-full w-fit font-bold ${
+                                                        member.paymentStatus === 'Paid' ? 'bg-green-100 text-green-800' :
+                                                        member.paymentStatus === 'Partial' ? 'bg-yellow-100 text-yellow-800' :
+                                                        'bg-red-100 text-red-800'
+                                                    }`}>
+                                                        {member.paymentStatus}
+                                                    </span>
+                                                    <span className="text-xs text-gray-500 mt-1">Paid: {formatCurrency(paid, order.currency)}</span>
+                                                </div>
+                                            </td>
+                                            {!isHistory && (
+                                                <td className="px-6 py-4 text-right">
+                                                    <button 
+                                                        onClick={() => {
+                                                            setCurrentOrder({
+                                                                ...order,
+                                                                selectedMemberId: member.memberId,
+                                                                teamPaidAmount: paid,
+                                                                teamPaymentStatus: member.paymentStatus
+                                                            });
+                                                            setShowTeamPaymentModal(true);
+                                                        }}
+                                                        className="text-white bg-blue-600 hover:bg-blue-700 px-4 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-all"
+                                                    >
+                                                        Pay Now
+                                                    </button>
+                                                </td>
+                                            )}
+                                        </tr>
+                                    );
+                                })
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        );
+
+        return (
+            <>
+                {/* 1. Main Table (Active Projects & Unpaid/Recent Completed) */}
+                <RenderTable 
+                    data={activeList} 
+                    title="Assigned Projects & Team Payment" 
+                    icon="fa-clipboard-list" 
+                    headerClass="bg-gray-50"
+                    isHistory={false}
+                />
+
+                {/* 2. Archived Folder (Old & Paid Projects) */}
+                <div className="mt-8 border-t-2 border-dashed border-gray-200 pt-6">
+                    <details className="group">
+                        <summary className="flex items-center justify-between cursor-pointer list-none bg-yellow-50 p-4 rounded-xl shadow-sm border border-yellow-200 hover:bg-yellow-100 transition-all select-none">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center text-yellow-600 shadow-sm">
+                                    <i className="fas fa-archive text-xl"></i>
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-yellow-900 text-lg">Archived History</h3>
+                                    <p className="text-xs text-yellow-700">Completed & Fully Paid projects (older than 1 month)</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <span className="bg-white px-3 py-1 rounded-full text-xs font-bold text-yellow-800 shadow-sm">
+                                    {historyList.length} Archived
+                                </span>
+                                <div className="w-8 h-8 rounded-full bg-white flex items-center justify-center text-yellow-600 transition-transform group-open:rotate-180">
+                                    <i className="fas fa-chevron-down"></i>
+                                </div>
+                            </div>
+                        </summary>
+                        
+                        <div className="mt-4 animate-fadeIn transition-all">
+                            <RenderTable 
+                                data={historyList} 
+                                title="Past Project History" 
+                                icon="fa-history" 
+                                headerClass="bg-yellow-50/50"
+                                isHistory={true}
+                            />
+                        </div>
+                    </details>
+                </div>
+            </>
+        );
+    })()}
+</div>
+</div>
+   )}
                         {/* ==================== FINANCIALS TAB ==================== */}
 {activeTab === 'financials' && (
     <div className="w-full">
